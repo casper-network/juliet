@@ -60,7 +60,6 @@ Typical implementations will be most often based on stream protocols like TCP or
 * **In-flight request**: A request which has not been fully processed by the receiver yet.
 * **Incomplete request**: A request spanning multiple frames for which not all frames have been received yet.
 
-
 ## Frame structure
 
 Each frame consists of a header, followed by an optional segment. Every header is exactly four bytes in size. A segment follows if the extracted error or frame kind dictates it.
@@ -106,12 +105,12 @@ A frame's kind is dependent from the kind number, as described below. Message ki
 
 | Kind number | Message kind | Has payload | Meaning     |
 | ----------- | ------------ | ----------- | ----------- |
-|           0 | `REQUEST`     | no          | A request |
-|           1 | `RESPONSE`    | no          | A response |
-|           2 | `REQUEST_PL`  | yes         | Request with a payload |
-|           3 | `RESPONSE_PL` | yes         | Response with no payload |
-|           4 | `CANCEL_REQ`  | no          | Request cancellation |
-|           5 | `CANCEL_RESP` | no          | Response cancellation |
+|           0 | `REQUEST`     | no         | A request |
+|           1 | `RESPONSE`    | no         | A response |
+|           2 | `REQUEST_PL`  | yes        | Request with a payload |
+|           3 | `RESPONSE_PL` | yes        | Response with no payload |
+|           4 | `CANCEL_REQ`  | no         | Request cancellation |
+|           5 | `CANCEL_RESP` | no         | Response cancellation |
 
 ### Varint32
 
@@ -143,24 +142,24 @@ Decoding can be done as follows:
 4. If `i` == `4` and `k & H` != 0 return (a `BAD_VARINT`) error.
 5. Set `n = n | (k & M) << (7*i)`.
 6. If `k & H` != `0`, set `i` = `i+1`, go to 2.
-7. Finish. 
+7. Finish.
 
 Example values:
 
-| Integer value (decimal) | little endian 32-bit integer | `varint32`        |
+| Integer value (decimal) | little endian 32-bit integer | `varint32`       |
 | ----------------------- | ---------------------------- | ---------------- |
-| `0`                       | `00 00 00 00`                   | `00` |
-| `1`                       | `01 00 00 00`                   | `01` |
-| `127`                     | `7F 00 00 00`                   | `7F` |
-| `128`                     | `80 00 00 00`                   | `81 00` |
-| `129`                     | `81 00 00 00`                   | `81 01`
+| `0`                     | `00 00 00 00`                | `00`             |
+| `1`                     | `01 00 00 00`                | `01`             |
+| `127`                   | `7F 00 00 00`                | `7F`             |
+| `128`                   | `80 00 00 00`                | `81 00`          |
+| `129`                   | `81 00 00`                   | `81 01`          |
 
 (TODO: More examples of varint encoding & check algorithm).
 
 The length of a varint32 encoded integer can is thus as follows:
 
 | Range `n`                      | Bytes used to encode |
-| ---------------------------- | -------------------- |
+| ------------------------------ | -------------------- |
 | 0 <= `n` <= 127                | 1 |
 | 128 <= `n` <= 16383            | 2 |
 | 16384 <= `n` <= 2097151        | 3 |
@@ -201,9 +200,11 @@ The order and size of all frames is determined by the length of the payload. If 
 └───────────┴────────────────────────────────┘
  00 01 02 03 04 (05 06 07 ... MAX_FRAME_SIZE)
 ```
+
 #### Determining the number of frames for a given segment
 
 We can define a function `C(n)` that determines the number of segments (and thus frames) required for sending a payload of size `n >= 0`. Let `VL(k)` be the number of bytes required to varint32-encode an integer `k`, `//` integer division and `cdiv(n, k) = (n + k - 1) // k`. Then
+
 ```
 C(n) = 1 + cdiv(MAX(0, n+4+VL(n)-MAX_FRAME_SIZE), (MAX_FRAME_SIZE-4))
 ```
@@ -227,7 +228,7 @@ Some of these limits are channel specific, denoted by the `_n` suffix, indicatin
 There are two channels states for every valid channel named `READY` and `RECEIVING`. Every channel `n` carries the state as `STATE_n` and following state information on both peers:
 
 * `INCOMING_REQS_n`: A set of IDs that are currently considered in-flight requests in flight received by the local peer.
-* `OUTGOING_REQS_n`: A set of IDs that sent by the local peer which are in-flight. 
+* `OUTGOING_REQS_n`: A set of IDs that sent by the local peer which are in-flight.
 
 The `READY` state of a channel carries no additional fields, while the `RECEIVING` state records a current ID, data received so far and total payload size.
 
@@ -251,23 +252,23 @@ Errors are only sent in response to received messages, with the exception of `OT
 
 If an error with an invalid error number is received, the receiver MUST close the connection and MUST NOT send an `INVALID_HEADER` error back.
 
-| Err no. | Name                    | Error |
-| ------- | ----------------------- | ----- |
-|       0 | `OTHER`                 | Application-specific error, MUST include a payload |
+| Err no. | Name                      | Error |
+| ------- | ------------------------- | ----- |
+|       0 | `OTHER`                   | Application-specific error, MUST include a payload |
 |       1 | `MAX_FRAME_SIZE_EXCEEDED` | `MAX_FRAME_SIZE` has been exceeded, cannot occur in stream based implementations |
-|       2 | `INVALID_HEADER`         | The header was not understood |
-|       3 | `SEGMENT_VIOLATION`    | A segment was sent with a frame where none was allowed, or a segment was too small or missing |
-|       4 | `BAD_VARINT`            | A varint32 could not be decoded |
-|       5 | `INVALID_CHANNEL`        | Invalid channel: A channel number greater or equal `NUM_CHANNELS` was received |
-|       6 | `IN_PROGRESS`            | A new request or response was sent without completing the previous one |
+|       2 | `INVALID_HEADER`          | The header was not understood |
+|       3 | `SEGMENT_VIOLATION`       | A segment was sent with a frame where none was allowed, or a segment was too small or missing |
+|       4 | `BAD_VARINT`              | A varint32 could not be decoded |
+|       5 | `INVALID_CHANNEL`         | Invalid channel: A channel number greater or equal `NUM_CHANNELS` was received |
+|       6 | `IN_PROGRESS`             | A new request or response was sent without completing the previous one |
 |       7 | `RESPONSE_TOO_LARGE`      | `MAX_RESPONSE_PAYLOAD_n` would be exceeded by advertised payload |
 |       8 | `REQUEST_TOO_LARGE`       | `MAX_REQUEST_PAYLOAD_SIZE_n` would be exceeded |
 |       9 | `DUPLICATE_REQUEST`       | A sender attempted to create two in-flight requests with the same ID on the same channel |
 |      10 | `FICTITIOUS_REQUEST`      | Sent a response for request not in-flight |
 |      11 | `REQUEST_LIMIT_EXCEEDED`  | `REQUEST_LIMIT_n` for channel `n` exceeded |
 |      12 | `FICTITIOUS_CANCEL`       | Sent a response cancellation for request not in-flight |
-|      13 | `TODO?`                  | ??? TODO too many request cancellations? |
-|      14 | `TODO?`                  | ??? Maybe -- application error saying could not deserialize? |
+|      13 | `TODO?`                   | ??? TODO too many request cancellations? |
+|      14 | `TODO?`                   | ??? Maybe -- application error saying could not deserialize? |
 
 ### Channel states and message flow
 
@@ -323,7 +324,7 @@ The sender of a new request on channel `n` MUST obtain an unused ID each time, a
 
 The sender MUST first check its `OUTGOING_REQS_n` set - if it is equal or greater in size than `REQUEST_LIMIT_n`, it MUST delay sending the entire request until `OUTGOING_REQS_n` has shrunk in size.
 
-The sender MUST select an unused ID not in `OUTGOING_REQS_n` (see below for details on how to select an unused ID). 
+The sender MUST select an unused ID not in `OUTGOING_REQS_n` (see below for details on how to select an unused ID).
 
 ### Transferring multi-frame messages
 
@@ -345,7 +346,7 @@ If `STATE_n` is in the `READY` state the receiver MUST attempt to decode the var
 
 If `STATE_n` is in the `RECEIVING` state with an ID that does not match the newly received frames ID, it MUST send an `IN_PROGRESS` error.
 
-If `STATE_n` is `RECEIVING` with an ID that does match the newly received frames ID, 
+If `STATE_n` is `RECEIVING` with an ID that does match the newly received frames ID,
 it adds the received data to its buffer, unless the newly received data would cause it to exceed the advertised payload size, in which case it MUST send back a `SEGMENT_VIOLATION` to the sender. If the received frame is expected to contain an intermediate segment but is not of `MAX_FRAME_SIZE` length, the receiver MUST send back a `SEGMENT_VIOLATION` to the sender. If the received frame contains the expected end segment, the complete payload is yielded and `STATE_n` reset to the `READY` state.
 
 ### Stream-based transports
