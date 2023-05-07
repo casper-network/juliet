@@ -1,16 +1,15 @@
 # juliet networking protocol
 
-# TODO
+## TODO
 
 * Address issue of bloating memory by sending unfinished requests (which are larger than replies, but can only checked when they arrive). Maybe we need a per-channel limit as well, similar to how we need one for requests? Could be good to just group all limits in one struct.
 * Add formula to estimate memory usage, based on constants, in a security section?
 * Mention that we do not allow interleaving of multiple multi-frame payloads , as a security measure to guard against memory usage.
-* Pings?
 * Timeouts?
 * Request, Cancel, Request, Cancel, Request, Cancel, Request, Cancel... attack?
 * Implementation details -- guaranteeing a response for everything, even on connection close.
 
-### Abstract
+## Abstract
 
 This document describes the proposed implementation for a backpressuring, multiplexing communication protocol based on a request-response pattern sent over an underlying reliable streaming protocol. The protocol itself emphasizes easy verifiability and avoidance of denial-of-service opportunities for both participants by putting the rate of processed requests firmly in the hands of the serving side.
 
@@ -364,3 +363,15 @@ In a stream-based transport, which has no implicit separation, frames can still 
 3. Consume the now known remainder of the segment, if any.
 
 This means that the `MAX_FRAME_SIZE_EXCEEDED`  and `SEGMENT_VIOLATION` errors cannot occur, as the exceeding/missing bytes will simply be interpreted as belonging to /taken from the following frame.
+
+## Application level concerns
+
+### Heartbeats
+
+The core juliet protocol deliberatly avoids any timing concerns, e.g. keep-alive pings or heartbeats. On the application level, a recommended algorithm is:
+
+1. Define a `KEEPALIVE` timeout (e.g. 30 seconds).
+2. Dedicate a channel to "heartbeat" messages.
+3. Send a "heartbeat" message every half duration of `KEEPALIVE`.
+4. When receiving a "heartbeat" message, mark its receival. If it is earlier than one quarter of the `KEEPALIVE` timeout after another "heartbeat", send an application error and disconnect.
+5. If `KEEPALIVE` elapsed without any data being received, disconnect.
