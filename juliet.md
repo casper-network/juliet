@@ -229,6 +229,7 @@ There are two channels states for every valid channel named `READY` and `RECEIVI
 
 * `INCOMING_REQS_n`: A set of IDs that are currently considered in-flight requests in flight received by the local peer.
 * `OUTGOING_REQS_n`: A set of IDs that sent by the local peer which are in-flight.
+* `CANCELLATION_ALLOWANCE_n`: An integer with a range between `0` and `REQUEST_LIMIT_n` with initial value `0`.
 
 The `READY` state of a channel carries no additional fields, while the `RECEIVING` state records a current ID, data received so far and total payload size.
 
@@ -252,23 +253,22 @@ Errors are only sent in response to received messages, with the exception of `OT
 
 If an error with an invalid error number is received, the receiver MUST close the connection and MUST NOT send an `INVALID_HEADER` error back.
 
-| Err no. | Name                      | Error |
-| ------- | ------------------------- | ----- |
-|       0 | `OTHER`                   | Application-specific error, MUST include a payload |
-|       1 | `MAX_FRAME_SIZE_EXCEEDED` | `MAX_FRAME_SIZE` has been exceeded, cannot occur in stream based implementations |
-|       2 | `INVALID_HEADER`          | The header was not understood |
-|       3 | `SEGMENT_VIOLATION`       | A segment was sent with a frame where none was allowed, or a segment was too small or missing |
-|       4 | `BAD_VARINT`              | A varint32 could not be decoded |
-|       5 | `INVALID_CHANNEL`         | Invalid channel: A channel number greater or equal `NUM_CHANNELS` was received |
-|       6 | `IN_PROGRESS`             | A new request or response was sent without completing the previous one |
-|       7 | `RESPONSE_TOO_LARGE`      | `MAX_RESPONSE_PAYLOAD_n` would be exceeded by advertised payload |
-|       8 | `REQUEST_TOO_LARGE`       | `MAX_REQUEST_PAYLOAD_SIZE_n` would be exceeded |
-|       9 | `DUPLICATE_REQUEST`       | A sender attempted to create two in-flight requests with the same ID on the same channel |
-|      10 | `FICTITIOUS_REQUEST`      | Sent a response for request not in-flight |
-|      11 | `REQUEST_LIMIT_EXCEEDED`  | `REQUEST_LIMIT_n` for channel `n` exceeded |
-|      12 | `FICTITIOUS_CANCEL`       | Sent a response cancellation for request not in-flight |
-|      13 | `TODO?`                   | ??? TODO too many request cancellations? |
-|      14 | `TODO?`                   | ??? Maybe -- application error saying could not deserialize? |
+| Err no. | Name                          | Error |
+| ------- | ----------------------------- | ----- |
+|       0 | `OTHER`                       | Application-specific error, MUST include a payload |
+|       1 | `MAX_FRAME_SIZE_EXCEEDED`     | `MAX_FRAME_SIZE` has been exceeded, cannot occur in stream based implementations |
+|       2 | `INVALID_HEADER`              | The header was not understood |
+|       3 | `SEGMENT_VIOLATION`           | A segment was sent with a frame where none was allowed, or a segment was too small or missing |
+|       4 | `BAD_VARINT`                  | A varint32 could not be decoded |
+|       5 | `INVALID_CHANNEL`             | Invalid channel: A channel number greater or equal `NUM_CHANNELS` was received |
+|       6 | `IN_PROGRESS`                 | A new request or response was sent without completing the previous one |
+|       7 | `RESPONSE_TOO_LARGE`          | `MAX_RESPONSE_PAYLOAD_n` would be exceeded by advertised payload |
+|       8 | `REQUEST_TOO_LARGE`           | `MAX_REQUEST_PAYLOAD_SIZE_n` would be exceeded |
+|       9 | `DUPLICATE_REQUEST`           | A sender attempted to create two in-flight requests with the same ID on the same channel |
+|      10 | `FICTITIOUS_REQUEST`          | Sent a response for request not in-flight |
+|      11 | `REQUEST_LIMIT_EXCEEDED`      | `REQUEST_LIMIT_n` for channel `n` exceeded |
+|      12 | `FICTITIOUS_CANCEL`           | Sent a response cancellation for request not in-flight |
+|      13 | `CANCELLATION_LIMIT_EXCEEDED` | Sent a request cancellation exceeding the cancellation allowance |
 
 ### Channel states and message flow
 
@@ -282,7 +282,7 @@ To send a request without a payload, a sender MUST create a header with kind `RE
 
 The receiver of a frame of kind `REQUEST` MUST check if `INCOMING_REQS_n` is greater or equal in size than `REQUEST_LIMIT_n`; if it is the receiver MUST send back a `REQUEST_LIMIT_EXCEEDED` error.
 
-The receiver MUST track the incoming request ID by adding it to `INCOMING_REQS_n`. It now yields a valid `REQUEST` message to the application.
+The receiver MUST track the incoming request ID by adding it to `INCOMING_REQS_n` and increase `CANCELLATION_ALLOWANCE_n` by one, unless it is already at its maximum value. It now yields a valid `REQUEST` message to the application.
 
 #### Sending a request with a payload
 
@@ -292,7 +292,7 @@ The sender of a request with a payload MUST create a header with kind `REQUEST_P
 
 The receiver of a frame of kind `REQUEST_PL` with a starting segment MUST check if `INCOMING_REQS_n` is greater or equal in size than `REQUEST_LIMIT_n`; if it is the receiver MUST send back a `REQUEST_LIMIT_EXCEEDED` error. If the advertised size of the payload exceeds `MAX_REQUEST_PAYLOAD_SIZE_n`, it MUST send back a `REQUEST_TOO_LARGE` error to the sender.
 
-The receiver MUST track the incoming request ID by adding it to `INCOMING_REQS_n` on reception of the starting segment.
+The receiver MUST track the incoming request ID by adding it to `INCOMING_REQS_n` on reception of the starting segment and increase `CANCELLATION_ALLOWANCE_n` by one, unless it is already at its maximum value.
 
 Once the ending segment was received, the receiver yields a valid `REQUEST_PL` message to the application.
 
@@ -312,11 +312,17 @@ The receiver of a frame of kind `RESPONSE_PL` with a starting segment MUST check
 
 #### Sending a request cancellation
 
-TODO
+To send a request cancellation, a sender MUST create a header with kind `CANCEL_REQUEST`, channel `n` and the ID of a currently in-flight request from `OUTGOING_REQS_n`. The sender MUST NOT remove this ID from `OUTGOING_REQS_n` until it has received either a response or response cancellation with the ID. It SHOULD never send more than one response cancellation for a given ID on a channel.
+
+The receiver of a request cancellation MUST decrement `CANCELLATION_ALLOWANCE_n` by one, or if it already is `0`, send a `CANCELLATION_LIMIT_EXCEEDED` error back to the sender.
+
+It then yields a valid `REQUEST_CANCELLATION` message to the application.
 
 #### Sending a response cancellation
 
-TODO
+To send a response cancellation, a sender MUST create a header with kind `CANCEL_RESPONSE`, channel `n` and the ID of a currently in-flight request from `INCOMING_REQS_n`. Once the cancellation has been sent, the sender removes the ID from `INCOMING_REQS_n`.
+
+The receiver of a frame of kind `CANCEL_RESPONSE` MUST check if `OUTGOING_REQS_n` contains the request, if not it must send a `FICTITIOUS_CANCEL` error to the sender. Otherwise it removes the ID from `OUTGOING_REQS_n` and yields a valid `CANCEL_RESPONSE` message to the application.
 
 ### Obtaining an unused ID on a given channel
 
