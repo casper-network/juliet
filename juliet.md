@@ -1,13 +1,5 @@
 # juliet networking protocol
 
-## TODO
-
-* Address issue of bloating memory by sending unfinished requests (which are larger than replies, but can only checked when they arrive). Maybe we need a per-channel limit as well, similar to how we need one for requests? Could be good to just group all limits in one struct.
-* Add formula to estimate memory usage, based on constants, in a security section?
-* Mention that we do not allow interleaving of multiple multi-frame payloads , as a security measure to guard against memory usage.
-* Request, Cancel, Request, Cancel, Request, Cancel, Request, Cancel... attack?
-* Implementation details -- guaranteeing a response for everything, even on connection close.
-
 ## Abstract
 
 This document describes the proposed implementation for a backpressuring, multiplexing communication protocol based on a request-response pattern sent over an underlying reliable streaming protocol. The protocol itself emphasizes easy verifiability and avoidance of denial-of-service opportunities for both participants by putting the rate of processed requests firmly in the hands of the serving side.
@@ -378,3 +370,11 @@ The core juliet protocol deliberatly avoids any timing concerns, e.g. keep-alive
 ### Timeouts
 
 Like heartbeats, timeouts are out of scope for the core protocol, but an implementation may consider adding built-in support for these. As applications using the juliet protocol will already have to address potential response cancellations by remote peers, an implementation can support callers specifying a timeout for every request by tracking these, then sending an implicit cancellation to the peer and yielding a synthesized response cancellation to the application.
+
+## Notes on security
+
+TODO: Write out core principles behind design, in terms of security
+
+* How to determine maximum memory usage from parameters. Should also include malicious clients holding hostage with large requests (timeouts should address this).
+* The reasoning behind the cancellation limit.
+* Explain the limit for one in-progress multi-frame message.
