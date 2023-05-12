@@ -108,8 +108,9 @@ A varint32 is an unsigned 32 bit integer encoded with a variable length, which e
 
 To encode a 32 bit integer `n`, the following algorithm is used:
 
-* Let `M` be a bitmask of all `1`s except the highest bit (`0`), i.e. `01111111` in binary / `127` decimal,
-* `H` the value `10000000` in binary / `128` in decimal,
+* Let `M` be an 8-bit bitmask of all `1`s except the highest bit (`0`), i.e. `01111111` in binary / `127` decimal,
+* `H` the inverse of `M`, i.e. the value `10000000` in binary / `128` in decimal,
+* `n[0]` the lowest significant byte of `n`,
 * `>>` a bitwise right shift (non-rotating),
 * `<<` a bitwise left shift (non-rotating),
 * `&` a bitwise AND operation, and
@@ -117,45 +118,34 @@ To encode a 32 bit integer `n`, the following algorithm is used:
 
 Encode as follows:
 
-1. Set `k`=`n & M`.
-2. If `n` != `k`, set `k` = `k | H`.
-3. Output `k` as the next byte.
-4. If `n` == `k`, finish.
-5. Set `n` = `n >> 7`.
+1. Set `k` = `n[0] & M`.
+2. Set `n` = `n >> 7`.
+3. If `n` > 0, set `k` = `k | H`.
+4. Output `k` as the next byte.
+5. If `n` == 0, finish.
 6. Go to 1.
 
 Decoding can be done as follows:
 
 1. Set `n` = 0, `i` = 0.
-2. If `i` > `4` return an error.
-3. Consume one byte from the input as `k`.
-4. If `i` == `4` and `k & H` != 0 return (a `BAD_VARINT`) error.
-5. Set `n = n | (k & M) << (7*i)`.
-6. If `k & H` != `0`, set `i` = `i+1`, go to 2.
-7. Finish.
+2. Consume one byte from the input as `k`. If there is no more input, return an error indicating insufficient data.
+3. If `i` >= `4` && `k & H` != `0`, return an error.
+4. Set `n` = `n | (k & M) << (i*7)`.
+5. If `k & H` == `0` return `n`.
+6. Go to 2.
 
 Example values:
 
 | Integer value (decimal) | little endian 32-bit integer | `varint32`       |
 | ----------------------- | ---------------------------- | ---------------- |
 | `0`                     | `00 00 00 00`                | `00`             |
-| `1`                     | `01 00 00 00`                | `01`             |
+| `64`                    | `40 00 00 00`                | `40`             |
 | `127`                   | `7F 00 00 00`                | `7F`             |
-| `128`                   | `80 00 00 00`                | `81 00`          |
-| `129`                   | `81 00 00`                   | `81 01`          |
-
-(TODO: More examples of varint encoding & check algorithm).
-
-The length of a varint32 encoded integer can is thus as follows:
-
-| Range `n`                      | Bytes used to encode |
-| ------------------------------ | -------------------- |
-| 0 <= `n` <= 127                | 1 |
-| 128 <= `n` <= 16383            | 2 |
-| 16384 <= `n` <= 2097151        | 3 |
-| 2097152 <= `n` <= 268435455    | 4 |
-| 268435456 <= `n` <= 4294967295 | 5 |
-| 4294967296 <= `n`              | invalid (>= `2^32`) |
+| `128`                   | `80 00 00 00`                | `80 01`          |
+| `255`                   | `FF 00 00 00`                | `FF 01`          |
+| `65535`                 | `FF FF 00 00`                | `FF FF 03`       |
+| `305419896`             | `78 56 34 12`                | `F8 AC D1 91 01` |
+| `4294967295`            | `FF FF FF FF`                | `FF FF FF FF 0F` |
 
 ### Segments
 
