@@ -262,7 +262,7 @@ To send a request without a payload, a sender MUST create a header with kind `RE
 
 The receiver of a frame of kind `REQUEST` MUST check if `INCOMING_REQS_n` is greater or equal in size than `REQUEST_LIMIT_n`; if it is the receiver MUST send back a `REQUEST_LIMIT_EXCEEDED` error.
 
-The receiver MUST track the incoming request ID by adding it to `INCOMING_REQS_n` and increase `CANCELLATION_ALLOWANCE_n` by one, unless it is already at its maximum value. It now yields a valid `REQUEST` message to the application.
+The receiver MUST track the incoming request ID by adding it to `INCOMING_REQS_n` and increase `CANCELLATION_ALLOWANCE_n` by one, unless it is already at its maximum value. If `INCOMING_REQS_n` already contained the given ID, the receiver MUST send back a `DUPLICATE_REQUEST` error. It now yields a valid `REQUEST` message to the application.
 
 #### Sending a request with a payload
 
@@ -272,7 +272,7 @@ The sender of a request with a payload MUST create a header with kind `REQUEST_P
 
 The receiver of a frame of kind `REQUEST_PL` with a starting segment MUST check if `INCOMING_REQS_n` is greater or equal in size than `REQUEST_LIMIT_n`; if it is the receiver MUST send back a `REQUEST_LIMIT_EXCEEDED` error. If the advertised size of the payload exceeds `MAX_REQUEST_PAYLOAD_SIZE_n`, it MUST send back a `REQUEST_TOO_LARGE` error to the sender.
 
-The receiver MUST track the incoming request ID by adding it to `INCOMING_REQS_n` on reception of the starting segment and increase `CANCELLATION_ALLOWANCE_n` by one, unless it is already at its maximum value.
+The receiver MUST track the incoming request ID by adding it to `INCOMING_REQS_n` on reception of the starting segment and increase `CANCELLATION_ALLOWANCE_n` by one, unless it is already at its maximum value. If `INCOMING_REQS_n` already contained the given ID, the receiver MUST send back a `DUPLICATE_REQUEST` error.
 
 Once the ending segment was received, the receiver yields a valid `REQUEST_PL` message to the application.
 
