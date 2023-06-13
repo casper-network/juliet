@@ -59,7 +59,7 @@ Each frame consists of a header, followed by an optional segment. Every header i
 ┌───────────┬────────────────────────────────┐
 │ Header    │ Segment                        │
 └───────────┴────────────────────────────────┘
- 00 01 02 03 (04 05 06 07 ... MAX_FRAME_SIZE)
+ 00 01 02 03 (04 05 06 07 .. MAX_FRAME_SIZE-1)
 ```
 
 ### Headers
@@ -98,7 +98,7 @@ A frame's kind is dependent from the kind number, as described below. Message ki
 |           0 | `REQUEST`     | no         | A request |
 |           1 | `RESPONSE`    | no         | A response |
 |           2 | `REQUEST_PL`  | yes        | Request with a payload |
-|           3 | `RESPONSE_PL` | yes        | Response with no payload |
+|           3 | `RESPONSE_PL` | yes        | Response with a payload |
 |           4 | `CANCEL_REQ`  | no         | Request cancellation |
 |           5 | `CANCEL_RESP` | no         | Response cancellation |
 
@@ -170,7 +170,7 @@ The order and size of all frames is determined by the length of the payload. If 
 ┌───────────┬────────────────────────────────┐
 │ Header    │ data                           │
 └───────────┴────────────────────────────────┘
- 00 01 02 03 04 ..             MAX_FRAME_SIZE
+ 00 01 02 03 04 ..           MAX_FRAME_SIZE-1
 ```
 
 ```
@@ -178,7 +178,7 @@ The order and size of all frames is determined by the length of the payload. If 
 ┌───────────┬────────────────────────────────┐
 │ Header    │ data                           │
 └───────────┴────────────────────────────────┘
- 00 01 02 03 04 (05 06 07 ... MAX_FRAME_SIZE)
+ 00 01 02 03 04 (05 06 07 .. MAX_FRAME_SIZE-1)
 ```
 
 #### Determining the number of frames for a given segment
