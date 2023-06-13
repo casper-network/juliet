@@ -156,7 +156,7 @@ A frame with a header whose associated message kind dictates a payload MUST cont
 
 A start segment begins with the varint32 encoded length of the entire payload, which MUST be followed by as much payload data as possible, filling the frame size. A frame is filled when its total size including the header is equal to `MAX_FRAME_SIZE`.
 
-The order and size of all frames is determined by the length of the payload. If a frame containing a start segment is enough to contain the entire payload, no more frames are sent to transfer this payload. If additional data needs to be transferred, for every additional `MAX_FRAME_SIZE - 4` bytes, an intermediate frame must be sent. Once less than `MAX_FRAME_SIZE` bytes are left to transfer, an end frame is sent. If there are 0 bytes left after the last intermediate frame, the end frame is omitted. A peer found in violation of any of these rules MUST be sent a `SEGMENT_VIOLATION` error or another error stemming from the potential misinterpretation of the following data.
+The order and size of all frames is determined by the length of the payload. If a frame containing a start segment is enough to contain the entire payload, no additional frames are sent to transfer this payload. If additional data needs to be transferred, for every additional `MAX_FRAME_SIZE - 4` bytes, an intermediate frame must be sent. Once less than `MAX_FRAME_SIZE` bytes are left to transfer, an end frame is sent. If there are 0 bytes left after the last intermediate frame, the end frame is omitted. A peer found in violation of any of these rules MUST be sent a `SEGMENT_VIOLATION` error or another error stemming from the potential misinterpretation of the following data.
 
 ```
         Frame with start segment
