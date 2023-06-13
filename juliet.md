@@ -130,7 +130,7 @@ Decoding can be done as follows:
 1. Set `n` = 0, `i` = 0.
 2. Consume one byte from the input as `k`. If there is no more input, return an error indicating insufficient data.
 3. If `i` >= `4` && `k & H` != `0`, return an error.
-4. Set `n` = `n | (k & M) << (i*7)`.
+4. Set `n` = `n | ((k & M) << (i*7))`.
 5. If `k & H` == `0` return `n`.
 6. Go to 2.
 
