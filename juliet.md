@@ -156,7 +156,7 @@ A frame with a header whose associated message kind dictates a payload MUST cont
 
 A start segment begins with the varint32 encoded length of the entire payload, which MUST be followed by as much payload data as possible, filling the frame size. A frame is filled when its total size including the header is equal to `MAX_FRAME_SIZE`.
 
-The order and size of all frames is determined by the length of the payload. If a frame containing a start segment is enough to contain the entire payload, no additional frames are sent to transfer this payload. If additional data needs to be transferred, for every additional `MAX_FRAME_SIZE - 4` bytes, an intermediate frame must be sent. Once less than `MAX_FRAME_SIZE` bytes are left to transfer, an end frame is sent. If there are 0 bytes left after the last intermediate frame, the end frame is omitted. A peer found in violation of any of these rules MUST be sent a `SEGMENT_VIOLATION` error or another error stemming from the potential misinterpretation of the following data.
+The order and size of all frames is determined by the length of the payload. If a frame containing a start segment is enough to contain the entire payload, no additional frames are sent to transfer this payload. If additional data needs to be transferred, for every additional `MAX_FRAME_SIZE - 4` bytes, an intermediate frame must be sent. Once less than `MAX_FRAME_SIZE - 4` bytes are left to transfer, an end frame is sent. If there are 0 bytes left after the last intermediate frame, the end frame is omitted. A peer found in violation of any of these rules MUST be sent a `SEGMENT_VIOLATION` error or another error stemming from the potential misinterpretation of the following data.
 
 ```
         Frame with start segment
@@ -208,8 +208,8 @@ Some of these limits are channel specific, denoted by the `_n` suffix, indicatin
 
 There are two channels states for every valid channel named `READY` and `RECEIVING`. Every channel `n` carries the state as `STATE_n` and following state information on both peers:
 
-* `INCOMING_REQS_n`: A set of IDs that are currently considered in-flight requests in flight received by the local peer.
-* `OUTGOING_REQS_n`: A set of IDs that sent by the local peer which are in-flight.
+* `INCOMING_REQS_n`: A set of IDs that are currently considered requests in flight received by the local peer.
+* `OUTGOING_REQS_n`: A set of IDs that sent by the local peer which are in flight.
 * `CANCELLATION_ALLOWANCE_n`: An integer with a range between `0` and `REQUEST_LIMIT_n` with initial value `0`.
 
 The `READY` state of a channel carries no additional fields, while the `RECEIVING` state records a current ID, data received so far and total payload size.
