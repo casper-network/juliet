@@ -257,7 +257,7 @@ To send a frame on channel `n`, peer MUST set the channel field of the header to
 
 Beyond sending errors, which can be done by both peers at any time, a sending peer can initiate the following flows on any valid channel:
 
-#### Request without a payload
+#### Sending a request without a payload
 
 To send a request without a payload, a sender MUST create a header with kind `REQUEST`, channel `n` and an unused ID (see below for details) and send it.
 
@@ -311,7 +311,7 @@ The sender of a new request on channel `n` MUST obtain an unused ID each time, a
 
 The sender MUST first check its `OUTGOING_REQS_n` set - if it is equal or greater in size than `REQUEST_LIMIT_n`, it MUST delay sending the entire request until `OUTGOING_REQS_n` has shrunk in size.
 
-The sender MUST select an unused ID not in `OUTGOING_REQS_n` (see below for details on how to select an unused ID).
+The sender than MUST select any unsigned 16 bit integer that is not in `OUTGOING_REQS_n` as the unused ID.
 
 ### Transferring multi-frame messages
 
