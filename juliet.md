@@ -202,7 +202,7 @@ Some of these limits are channel specific, denoted by the `_n` suffix, indicatin
 
 * `MAX_FRAME_SIZE` is the maximum size for a single frame, including header and segment. For implementations, this indicates the minimum memory required to receive a single frame. The recommended default value is 4 KB.
 * `NUM_CHANNELS` denotes the total number of channels where data can be sent on. No default value can be recommended. A valid channel number `c` is bound by `0 < c < n`.
-* `REQUEST_LIMIT_n` is the maximum number of in-flight requests on channel `n`. An optimal value is application specific, but a value of 1 is always a safe bet.
+* `REQUEST_LIMIT_n` is the maximum number of in-flight requests on channel `n`. An optimal value is application specific, but a value of 1 is always a safe bet. The maximum possible value for `REQUEST_LIMIT_n` is 65535, since IDs are 16 bit integers and must not collide.
 * `MAX_REQUEST_PAYLOAD_SIZE_n` is the maximum payload allowed for a message of kind `REQUEST_PL` on channel `n`.
 * `MAX_RESPONSE_PAYLOAD_SIZE_n` is the maximum payload allowed for a message of kind `RESPONSE_PL` on channel `n`.
 
