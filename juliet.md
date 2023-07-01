@@ -232,6 +232,8 @@ Once an error has been sent, the sender SHOULD attempt to flush the outgoing con
 
 Errors are only sent in response to received messages, with the exception of `OTHER`. An error sent MUST mirror the the channel and ID of the message that caused it.
 
+An error of kind `OTHER` must include a payload, but may never be a multi-frame message; it is thus limited to whatever fits into the remainder of the frame after header and encoded length. The receiver of an `OTHER` error that would start a multi-frame reception MUST NOT accept it and SHOULD send a `SEGMENT_VIOLATION` error back before closing the connection.
+
 If an error with an invalid error number is received, the receiver MUST close the connection and MUST NOT send an `INVALID_HEADER` error back.
 
 | Err no. | Name                          | Error |
@@ -239,7 +241,7 @@ If an error with an invalid error number is received, the receiver MUST close th
 |       0 | `OTHER`                       | Application-specific error, MUST include a payload |
 |       1 | `MAX_FRAME_SIZE_EXCEEDED`     | `MAX_FRAME_SIZE` has been exceeded, cannot occur in stream based implementations |
 |       2 | `INVALID_HEADER`              | The header was not understood |
-|       3 | `SEGMENT_VIOLATION`           | A segment was sent with a frame where none was allowed, or a segment was too small or missing |
+|       3 | `SEGMENT_VIOLATION`           | A segment was sent with a frame where none was allowed, or a segment was too small or missing, or an error payload too large |
 |       4 | `BAD_VARINT`                  | A varint32 could not be decoded |
 |       5 | `INVALID_CHANNEL`             | Invalid channel: A channel number greater or equal `NUM_CHANNELS` was received |
 |       6 | `IN_PROGRESS`                 | A new request or response was sent without completing the previous one |
