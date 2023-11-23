@@ -6,6 +6,7 @@ authors = [ "Marc Brinkmann <marc@casperlabs.io>" ]
 exclude = [ "proptest-regressions" ]
 description = "A safe stream multiplexing protocol"
 license = "Apache-2.0"
+repository = "https://github.com/casper-network/juliet"
 
 [dependencies]
 array-init = "2.1.0"
