@@ -20,6 +20,10 @@ This protocol description follows the [Semantiv Versioning 2.0.0](https://semver
 * MINOR version differences indicate additional optional features that are backwards and forwards compatible with any compliant implementation of a previous protocol version, while
 * PATCH version differences are clarifications/changes in wording or extensions to just the document itself that should have no impact on implementations.
 
+### Unreleased
+
+* Removed outdated information from footer of RFC.
+
 ### 1.0.0
 
 Initial release.
@@ -377,11 +381,3 @@ The core juliet protocol deliberatly avoids any timing concerns, e.g. keep-alive
 ### Timeouts
 
 Like heartbeats, timeouts are out of scope for the core protocol, but an implementation may consider adding built-in support for these. As applications using the juliet protocol will already have to address potential response cancellations by remote peers, an implementation can support callers specifying a timeout for every request by tracking these, then sending an implicit cancellation to the peer and yielding a synthesized response cancellation to the application.
-
-## Notes on security
-
-TODO: Write out core principles behind design, in terms of security
-
-* How to determine maximum memory usage from parameters. Should also include malicious clients holding hostage with large requests (timeouts should address this).
-* The reasoning behind the cancellation limit.
-* Explain the limit for one in-progress multi-frame message.
