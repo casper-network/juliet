@@ -1,5 +1,7 @@
 # juliet networking protocol
 
+Version: 1.0.0
+
 ## Abstract
 
 This document describes the proposed implementation for a backpressuring, multiplexing communication protocol based on a request-response pattern sent over an underlying reliable streaming protocol. The protocol itself emphasizes easy verifiability and avoidance of denial-of-service opportunities for both participants by putting the rate of processed requests firmly in the hands of the serving side.
@@ -9,6 +11,18 @@ This document describes the proposed implementation for a backpressuring, multip
 The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED",  "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://www.ietf.org/rfc/rfc2119.txt).
 
 A violation of any "MUST", "MUST NOT", "REQUIRED", "SHALL" or "SHALL NOT" specification in this document should be assumed to have profound security implications and is to be avoided by any implementer.
+
+## Versioning and changelog
+
+This protocol description follows the [Semantiv Versioning 2.0.0](https://semver.org/) scheme, adapted for describing a protocol. Specifically,
+
+* MAJOR version differences indicate incompatible protocol versions,
+* MINOR version differences indicate additional optional features that are backwards and forwards compatible with any compliant implementation of a previous protocol version, while
+* PATCH version differences are clarifications/changes in wording or extensions to just the document itself that should have no impact on implementations.
+
+### 1.0.0
+
+Initial release.
 
 ## Introduction
 
