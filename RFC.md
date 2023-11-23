@@ -1,6 +1,6 @@
 # juliet networking protocol
 
-Version: 1.0.0
+Version: 1.0.1
 
 ## Abstract
 
@@ -20,7 +20,7 @@ This protocol description follows the [Semantiv Versioning 2.0.0](https://semver
 * MINOR version differences indicate additional optional features that are backwards and forwards compatible with any compliant implementation of a previous protocol version, while
 * PATCH version differences are clarifications/changes in wording or extensions to just the document itself that should have no impact on implementations.
 
-### Unreleased
+### 1.0.1
 
 * Removed outdated information from footer of RFC.
 
