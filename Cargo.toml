@@ -4,6 +4,8 @@ version = "0.1.0-dev"
 edition = "2021"
 authors = [ "Marc Brinkmann <marc@casperlabs.io>" ]
 exclude = [ "proptest-regressions" ]
+description = "A safe stream multiplexing protocol"
+license = "Apache-2.0"
 
 [dependencies]
 array-init = "2.1.0"
