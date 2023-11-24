@@ -1,6 +1,6 @@
 name: juliet crate tests
 run-name: juliet crate tests triggered by ${{ github.actor }}
-on: [push]
+on: [push, merge_group]
 jobs:
   tests:
     runs-on: ubuntu-latest
