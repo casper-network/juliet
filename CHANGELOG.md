@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+
+* The `Display` output format for `Header` has changed, instead of displaying the hex encoded raw header value, it now display human readable output.
+
+### Removed
+
+* `juliet` no longer depends on the `hex_fmt` crate.
+
 ## [0.1.2] - 2023-11-24
 
 ### Added

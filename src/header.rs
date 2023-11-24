@@ -5,7 +5,6 @@
 use std::fmt::{Debug, Display};
 
 use bytemuck::{Pod, Zeroable};
-use hex_fmt::HexFmt;
 use strum::{EnumCount, EnumIter, FromRepr};
 use thiserror::Error;
 
@@ -20,8 +19,9 @@ use crate::{ChannelId, Id};
 pub struct Header([u8; Header::SIZE]);
 
 impl Display for Header {
+    #[inline(always)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", HexFmt(&self.0))
+        Debug::fmt(self, f)
     }
 }
 
@@ -30,7 +30,7 @@ impl Debug for Header {
         if self.is_error() {
             write!(
                 f,
-                "[err:{:?} chan: {} id: {}]",
+                "[err:{:?} c:{} id:{}]",
                 self.error_kind(),
                 self.channel(),
                 self.id()
@@ -38,7 +38,7 @@ impl Debug for Header {
         } else {
             write!(
                 f,
-                "[{:?} chan: {} id: {}]",
+                "[{:?} c:{} id:{}]",
                 self.kind(),
                 self.channel(),
                 self.id()
