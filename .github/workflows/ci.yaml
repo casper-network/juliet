@@ -1,0 +1,15 @@
+name: juliet crate tests
+run-name: juliet crate tests triggered by ${{ github.actor }}
+on: [push, merge_group]
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install nix
+        uses: cachix/install-nix-action@v22
+        with:
+          nix_path: nixpkgs=channel:nixos-23.05
+      - name: prefetch dependencies
+        run: nix-shell --pure --command true
+      - run: nix-shell --pure --command ./test.sh

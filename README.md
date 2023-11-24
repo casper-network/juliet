@@ -1,6 +1,6 @@
 # Juliet protocol implementation
 
-This crate implements the Juliet multiplexing protocol as laid out in the [Juliet RFC](https://github.com/marc-casperlabs/juliet-rfc/blob/master/juliet.md). It aims to be a secure, simple, easy to verify/review implementation that is still reasonably performant.
+This crate implements the Juliet multiplexing protocol version 1.0.1 as laid out in the [Juliet RFC](https://github.com/casper-network/juliet/blob/rfc-1.0.1/RFC.md). It aims to be a secure, simple, easy to verify/review implementation that is still reasonably performant.
 
 ## Benefits
 
