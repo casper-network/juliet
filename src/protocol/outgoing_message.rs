@@ -164,7 +164,7 @@ struct Preamble {
 
 impl Display for Preamble {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        Debug::fmt(&self.header, f)?;
+        Display::fmt(&self.header, f)?;
         if !self.payload_length.is_sentinel() {
             write!(f, " [len={}]", self.payload_length.decode())?;
         }
@@ -688,23 +688,23 @@ mod tests {
         let header = Header::new(Kind::RequestPl, ChannelId(1), Id(2));
         let preamble = Preamble::new(header, Varint32::encode(678));
 
-        assert_eq!(preamble.to_string(), "[RequestPl chan: 1 id: 2] [len=678]");
+        assert_eq!(preamble.to_string(), "[RequestPl c:1 id:2] [len=678]");
 
         let preamble_no_payload = Preamble::new(header, Varint32::SENTINEL);
 
-        assert_eq!(preamble_no_payload.to_string(), "[RequestPl chan: 1 id: 2]");
+        assert_eq!(preamble_no_payload.to_string(), "[RequestPl c:1 id:2]");
 
         let msg = OutgoingMessage::new(header, Some(Bytes::from(&b"asdf"[..])));
         let (frame, _) = msg.frames().next_owned(Default::default());
 
         assert_eq!(
             frame.to_string(),
-            "<[RequestPl chan: 1 id: 2] [len=4] 61 73 64 66 (4 bytes)>"
+            "<[RequestPl c:1 id:2] [len=4] 61 73 64 66 (4 bytes)>"
         );
 
         let msg_no_payload = OutgoingMessage::new(header, None);
         let (frame, _) = msg_no_payload.frames().next_owned(Default::default());
 
-        assert_eq!(frame.to_string(), "<[RequestPl chan: 1 id: 2]>");
+        assert_eq!(frame.to_string(), "<[RequestPl c:1 id:2]>");
     }
 }
