@@ -2509,4 +2509,108 @@ mod tests {
             MultiframeReceiver::Ready
         ));
     }
+
+    #[test]
+    fn two_multi_frame_messages_interleaved_causes_error() {
+        let big_payload_1 = VaryingPayload::MultiFrame;
+        let big_payload_2 = VaryingPayload::MultiFrame;
+
+        let mut env = TestingSetup::new();
+
+        let channel = env.common_channel;
+
+        // Alice sends the first multi-frame request's opening frame.
+        let alices_multiframe_request_1 = env
+            .get_peer_mut(Alice)
+            .create_request(channel, big_payload_1.get())
+            .expect("should be able to create request");
+        assert!(alices_multiframe_request_1.is_multi_frame(env.max_frame_size));
+
+        // Send first frame.
+        let frames = alices_multiframe_request_1.frames();
+        let (frame, _additional_frames) = frames.next_owned(env.max_frame_size);
+        let mut buffer = BytesMut::from(frame.to_bytes().as_ref());
+
+        // The outcome of receiving a single frame should be a begun multi-frame read and 4 bytes
+        // incompletion asking for the next header.
+        let outcome = env.get_peer_mut(Bob).process_incoming(&mut buffer);
+        assert_eq!(outcome, Outcome::incomplete(4));
+
+        // Alice sends the second multi-frame request's opening frame.
+        let alices_multiframe_request_2 = env
+            .get_peer_mut(Alice)
+            .create_request(channel, big_payload_2.get())
+            .expect("should be able to create request");
+        assert!(alices_multiframe_request_2.is_multi_frame(env.max_frame_size));
+
+        // Send second frame.
+        let frames = alices_multiframe_request_2.frames();
+        let (frame, _additional_frames) = frames.next_owned(env.max_frame_size);
+        let mut buffer = BytesMut::from(frame.to_bytes().as_ref());
+
+        // Now we expect an error.
+        let outcome = env.get_peer_mut(Bob).process_incoming(&mut buffer);
+        assert_eq!(
+            outcome,
+            Outcome::Fatal(OutgoingMessage::new(
+                Header::new_error(ErrorKind::InProgress, channel, Id::new(2)),
+                None,
+            ))
+        );
+    }
+
+    #[test]
+    fn multi_frame_followed_by_single_frame_request_is_acceptable() {
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .try_init()
+            .ok(); // If setting up logging fails, another testing thread already initialized it.
+
+        let payload_mf = VaryingPayload::MultiFrame;
+        let payload_sf = VaryingPayload::SingleFrame;
+
+        let mut env = TestingSetup::new();
+
+        let channel = env.common_channel;
+
+        // Alice sends the first multi-frame request's opening frame.
+        let alices_multiframe_request = env
+            .get_peer_mut(Alice)
+            .create_request(channel, payload_mf.get())
+            .expect("should be able to create request");
+        assert!(alices_multiframe_request.is_multi_frame(env.max_frame_size));
+
+        // Send first frame.
+        let frames = alices_multiframe_request.frames();
+        let (frame, _additional_frames) = frames.next_owned(env.max_frame_size);
+        let mut buffer = BytesMut::from(frame.to_bytes().as_ref());
+
+        // The outcome of receiving a single frame should be a begun multi-frame read and 4 bytes
+        // incompletion asking for the next header.
+        let outcome = env.get_peer_mut(Bob).process_incoming(&mut buffer);
+        assert_eq!(outcome, Outcome::incomplete(4));
+
+        // Alice sends the second multi-frame request's opening frame.
+        let alices_single_frame_request = env
+            .get_peer_mut(Alice)
+            .create_request(channel, payload_sf.get())
+            .expect("should be able to create request");
+        assert!(!alices_single_frame_request.is_multi_frame(env.max_frame_size));
+
+        // Send second frame.
+        let frames = alices_single_frame_request.frames();
+        let (frame, _additional_frames) = frames.next_owned(env.max_frame_size);
+        let mut buffer = BytesMut::from(frame.to_bytes().as_ref());
+
+        // This should be allowed, due to interleaving.
+        let outcome = env.get_peer_mut(Bob).process_incoming(&mut buffer);
+        assert_eq!(
+            outcome,
+            Outcome::Success(CompletedRead::NewRequest {
+                channel,
+                id: Id::new(2),
+                payload: Some(payload_sf.get().unwrap())
+            })
+        );
+    }
 }
