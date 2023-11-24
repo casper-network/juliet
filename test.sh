@@ -6,4 +6,4 @@ RUST_LOG=${RUST_LOG:-juliet=trace}
 export RUST_LOG
 
 # Run one thread at a time to not get interleaved output.
-exec cargo test --features tracing -- --test-threads=1 --nocapture $@
+exec cargo -q test --features tracing -- --test-threads=1 --nocapture --format=pretty $@
