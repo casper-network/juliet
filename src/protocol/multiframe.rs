@@ -397,7 +397,6 @@ mod tests {
 
     proptest! {
     #[test]
-    #[ignore]  // TODO: Adjust parameters so that this does not OOM (or fix leakage bug).
     fn model_sequence_test_multi_frame_receiver(
         actions in collection::vec(any::<Action>(), 0..1000)
     ) {
