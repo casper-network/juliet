@@ -386,15 +386,15 @@ mod tests {
         /// Will be ignored if hitting the last frame of the payload.
         #[proptest(weight = 1)]
         ContinueWithoutTooSmallFrame,
-        /// Exceeds the size limit.
+        /// Message send that exceeds the size limit.
         #[proptest(weight = 1)]
         ExceedPayloadSizeLimit {
             /// The header for the new message.
             header: Header,
-            /// How much to reduce the maximum payload size by.
+            /// Payload to send.
             #[proptest(strategy = "collection::vec(any::<u8>(),
-                    (MAX_SINGLE_FRAME_PAYLOAD_SIZE as usize + 1)
-                    ..=(2+2*MAX_SINGLE_FRAME_PAYLOAD_SIZE as usize))")]
+                    (MAX_PAYLOAD_SIZE as usize + 1)
+                    ..=(2+2*MAX_PAYLOAD_SIZE as usize))")]
             #[debug("{} bytes", payload.len())]
             payload: Vec<u8>,
         },
@@ -538,11 +538,6 @@ mod tests {
                     }
                 }
                 Action::ExceedPayloadSizeLimit { header, payload } => {
-                    if active_transfer.is_some() {
-                        // Only do this if there is no active transfer.
-                        continue;
-                    }
-
                     let msg = OutgoingMessage::new(header, Some(payload.into()));
                     let (frame, _) = msg.frames().next_owned(MAX_FRAME_SIZE);
                     input.put(frame);
