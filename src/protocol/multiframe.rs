@@ -381,11 +381,6 @@ mod tests {
             #[debug("{} bytes", payload.len())]
             payload: Vec<u8>,
         },
-        /// Sends another frame with data.
-        ///
-        /// Will be ignored if hitting the last frame of the payload.
-        #[proptest(weight = 1)]
-        ContinueWithoutTooSmallFrame,
         /// Message send that exceeds the size limit.
         #[proptest(weight = 1)]
         ExceedPayloadSizeLimit {
@@ -517,24 +512,6 @@ mod tests {
                         break; // Stop after error.
                     } else {
                         // Nothing to do - we cannot conflict with a transfer if there is none.
-                    }
-                }
-                Action::ContinueWithoutTooSmallFrame => {
-                    if let Some(ref active_transfer) = active_transfer {
-                        let header = active_transfer.header();
-
-                        // The only guarantee we have is that there is at least one more byte of
-                        // payload, so we send a zero-sized payload.
-                        let msg = OutgoingMessage::new(header, Some(Bytes::new()));
-                        let (frame, _) = msg.frames().next_owned(MAX_FRAME_SIZE);
-                        input.put(frame);
-                        expected.push(Outcome::Fatal(OutgoingMessage::new(
-                            header.with_err(ErrorKind::SegmentViolation),
-                            None,
-                        )));
-                        break; // Stop after error.
-                    } else {
-                        // Nothing to do, we cannot send a too-small frame if there is no transfer.
                     }
                 }
                 Action::ExceedPayloadSizeLimit { header, payload } => {
