@@ -806,9 +806,9 @@ where
     }
 }
 
-/// Determines whether an item is ready to be moved from the wait queue from the ready queue.
+/// Determines whether an item is ready to be moved from the wait queue to the ready queue.
 ///
-/// Returns `None` if the item does not need to wait. Otherwise, the items channel ID is returned.
+/// Returns `None` if the item does not need to wait. Otherwise, the item's channel ID is returned.
 fn item_should_wait<const N: usize>(
     item: &QueuedItem,
     juliet: &JulietProtocol<N>,
