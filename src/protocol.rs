@@ -2613,4 +2613,22 @@ mod tests {
             })
         );
     }
+
+    #[test]
+    fn can_send_back_to_back_multi_frame_requests() {
+        let big_payload_1 = VaryingPayload::MultiFrame;
+        let big_payload_2 = VaryingPayload::MultiFrame;
+
+        let mut env = TestingSetup::new();
+
+        let resp1 = env
+            .create_and_send_request(Alice, big_payload_1.get())
+            .expect("should be able to send multiframe request");
+        let resp2 = env
+            .create_and_send_request(Alice, big_payload_2.get())
+            .expect("should be able to send multiframe request");
+
+        assert!(matches!(resp1, CompletedRead::NewRequest { id, .. } if id == Id(1)));
+        assert!(matches!(resp2, CompletedRead::NewRequest { id, .. } if id == Id(2)));
+    }
 }
