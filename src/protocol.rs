@@ -1056,6 +1056,8 @@ mod tests {
         SingleFrame,
         /// A payload that spans more than one frame.
         MultiFrame,
+        /// A payload that spans a large number of frames.
+        LargeMultiFrame,
         /// A payload that exceeds the request size limit.
         TooLarge,
     }
@@ -1067,6 +1069,7 @@ mod tests {
                 VaryingPayload::None,
                 VaryingPayload::SingleFrame,
                 VaryingPayload::MultiFrame,
+                VaryingPayload::LargeMultiFrame,
             ]
             .into_iter()
         }
@@ -1077,6 +1080,7 @@ mod tests {
                 VaryingPayload::None => true,
                 VaryingPayload::SingleFrame => false,
                 VaryingPayload::MultiFrame => false,
+                VaryingPayload::LargeMultiFrame => false,
                 VaryingPayload::TooLarge => false,
             }
         }
@@ -1116,6 +1120,11 @@ mod tests {
             b"large payload large payload large payload large payload large payload large payload";
             const_assert!(LONG_PAYLOAD.len() > TestingSetup::MAX_FRAME_SIZE as usize);
 
+            const VERY_LONG_PAYLOAD: &[u8] =
+            b"very very large payload very large payload very large payload very large payload very large payload very large payload very very large payload very large payload very large payload very large payload very large payload very large payload very very large payload very large payload very large payload very large payload very large payload very large payload very very large payload very large payload very large payload very large payload very large payload very large payload";
+            const_assert!(VERY_LONG_PAYLOAD.len() > TestingSetup::MAX_FRAME_SIZE as usize);
+            const_assert!(VERY_LONG_PAYLOAD.len() <= TestingSetup::MAX_PAYLOAD_SIZE as usize);
+
             const OVERLY_LONG_PAYLOAD: &[u8] = b"abcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefgh";
             const_assert!(OVERLY_LONG_PAYLOAD.len() > TestingSetup::MAX_PAYLOAD_SIZE as usize);
 
@@ -1123,6 +1132,7 @@ mod tests {
                 VaryingPayload::None => None,
                 VaryingPayload::SingleFrame => Some(SHORT_PAYLOAD),
                 VaryingPayload::MultiFrame => Some(LONG_PAYLOAD),
+                VaryingPayload::LargeMultiFrame => Some(VERY_LONG_PAYLOAD),
                 VaryingPayload::TooLarge => Some(OVERLY_LONG_PAYLOAD),
             }
         }
@@ -2616,8 +2626,8 @@ mod tests {
 
     #[test]
     fn can_send_back_to_back_multi_frame_requests() {
-        let big_payload_1 = VaryingPayload::MultiFrame;
-        let big_payload_2 = VaryingPayload::MultiFrame;
+        let big_payload_1 = VaryingPayload::LargeMultiFrame;
+        let big_payload_2 = VaryingPayload::LargeMultiFrame;
 
         let mut env = TestingSetup::new();
 
