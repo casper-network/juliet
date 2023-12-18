@@ -895,11 +895,8 @@ impl<const N: usize> JulietProtocol<N> {
                     }
                 }
                 Kind::ResponsePl => {
-                    let is_new_response =
-                        channel.current_multiframe_receiver.is_new_transfer(header);
-
                     // Ensure it is not a bogus response.
-                    if is_new_response && !channel.outgoing_requests.contains(&header.id()) {
+                    if !channel.outgoing_requests.contains(&header.id()) {
                         return err_msg(header, ErrorKind::FictitiousRequest);
                     }
 
@@ -912,13 +909,10 @@ impl<const N: usize> JulietProtocol<N> {
                             ErrorKind::ResponseTooLarge
                         ));
 
-                    // If we made it to this point, we have consumed the frame.
-                    if is_new_response && !channel.outgoing_requests.remove(&header.id()) {
-                        return err_msg(header, ErrorKind::FictitiousRequest);
-                    }
-
                     if let Some(payload) = multiframe_outcome {
-                        // Message is complete.
+                        // Message is complete. Remove it from the outgoing requests.
+                        channel.outgoing_requests.remove(&header.id());
+
                         let payload = payload.freeze();
 
                         return Success(CompletedRead::ReceivedResponse {
