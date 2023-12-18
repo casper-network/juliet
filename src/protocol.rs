@@ -22,7 +22,7 @@
 mod multiframe;
 mod outgoing_message;
 
-use std::{collections::HashSet, fmt::Display, num::NonZeroU32};
+use std::{collections::HashSet, fmt::Display};
 
 use bytes::{Buf, Bytes, BytesMut};
 use thiserror::Error;
@@ -35,7 +35,7 @@ use crate::{
     util::{Index, PayloadFormat},
     varint::{decode_varint32, Varint32},
     ChannelConfiguration, ChannelId, Id,
-    Outcome::{self, Fatal, Incomplete, Success},
+    Outcome::{self, Fatal, Success},
 };
 
 /// A channel ID to fill in when the channel is actually unknown or not relevant.
@@ -746,7 +746,7 @@ impl<const N: usize> JulietProtocol<N> {
         loop {
             // We do not have enough data to extract a header, indicate and return.
             if buffer.len() < Header::SIZE {
-                return Incomplete(NonZeroU32::new((Header::SIZE - buffer.len()) as u32).unwrap());
+                return Outcome::incomplete(Header::SIZE - buffer.len());
             }
 
             let header_raw: [u8; Header::SIZE] = buffer[0..Header::SIZE].try_into().unwrap();
