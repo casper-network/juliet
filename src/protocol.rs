@@ -803,6 +803,7 @@ impl<const N: usize> JulietProtocol<N> {
                     }
                     _ => {
                         log_frame!(header);
+                        buffer.advance(Header::SIZE);
                         return Success(CompletedRead::ErrorReceived { header, data: None });
                     }
                 }
