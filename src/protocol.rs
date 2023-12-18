@@ -735,9 +735,9 @@ impl<const N: usize> JulietProtocol<N> {
     /// Any successful frame read will cause `buffer` to be advanced by the length of the frame,
     /// thus eventually freeing the data if not held elsewhere.
     ///
-    /// **Important**: This functions `Err` value is an [`OutgoingMessage`] to be sent to the peer.
-    /// It must be the final message sent and should be sent as soon as possible, with the
-    /// connection being close afterwards.
+    /// **Important**: This function's `Err` value is an [`OutgoingMessage`], to be sent to the
+    /// peer. It must be the final message sent and should be sent as soon as possible, with the
+    /// connection being closed afterwards.
     pub fn process_incoming(
         &mut self,
         buffer: &mut BytesMut,
