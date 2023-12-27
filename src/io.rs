@@ -683,6 +683,9 @@ where
                 // Note that this only cancels multi-frame requests.
                 if check_for_cancellation && !self.request_map.contains_left(&io_id) {
                     // We just ignore the request, as it has been cancelled in the meantime.
+                    // TODO: This feature breaks the local API, as we still expect to receive a
+                    //       cancellation. `rpc` is likely not affected, but someone using the
+                    //       `io` API might be.
                 } else {
                     let msg = self.juliet.create_request(channel, payload)?;
                     let id = msg.header().id();
