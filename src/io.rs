@@ -554,7 +554,7 @@ where
                             Err(TryRecvError::Disconnected) => {
                                 // While processing incoming items, the last handle was closed.
                                 #[cfg(feature = "tracing")]
-                                tracing::debug!("last local io handle closed, shutting down");
+                                tracing::info!("last local io handle closed, shutting down");
                                 return Ok(None);
                             }
                             Err(TryRecvError::Empty) => {
