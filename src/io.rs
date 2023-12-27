@@ -504,16 +504,18 @@ where
 
                     write_result.map_err(CoreError::WriteFailed)?;
 
-                    let frame_sent = self.current_frame.take().unwrap();
-
-                    #[cfg(feature = "tracing")]
-                    {
+                    // Clear `current_frame` via `Option::take` and examine what was sent.
+                    if let Some(frame_sent) = self.current_frame.take() {
+                        #[cfg(feature = "tracing")]
                         tracing::trace!(frame=%frame_sent, "sent");
-                    }
 
-                    if frame_sent.header().is_error() {
-                        // We finished sending an error frame, time to exit.
-                        return Err(CoreError::RemoteProtocolViolation(frame_sent.header()));
+                        if frame_sent.header().is_error() {
+                            // We finished sending an error frame, time to exit.
+                            return Err(CoreError::RemoteProtocolViolation(frame_sent.header()));
+                        }
+                    } else {
+                        #[cfg(feature = "tracing")]
+                        tracing::error!("current frame should not disappear");
                     }
                 }
 
