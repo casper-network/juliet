@@ -32,6 +32,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc,
     },
+    time::Duration,
 };
 
 use bimap::BiMap;
@@ -181,6 +182,13 @@ pub enum CoreError {
     /// Failed to write using underlying writer.
     #[error("write failed")]
     WriteFailed(#[source] io::Error),
+
+    /// Could not send an error in time.
+    ///
+    /// A limit is imposed on how long a peer may take to receive an error to avoid denial of
+    /// service through receiving these very slowly.
+    #[error("peer did not accept error in timely manner")]
+    ErrorWriteTimeout,
     /// Remote peer will/has disconnect(ed), but sent us an error message before.
     #[error("remote peer sent error [channel {}/id {}]: {} (payload: {} bytes)",
         header.channel(),
@@ -247,6 +255,8 @@ pub struct IoCore<const N: usize, R, W> {
     next_parse_at: usize,
     /// The error queued to be sent before shutting down.
     pending_error: Option<OutgoingFrame>,
+    /// The maximum time allowed for a peer to receive an error.
+    error_timeout: Duration,
 
     /// The frame in the process of being sent, which may be partially transferred already.
     current_frame: Option<OutgoingFrame>,
@@ -370,6 +380,8 @@ pub struct IoCoreBuilder<const N: usize> {
     protocol: ProtocolBuilder<N>,
     /// Number of additional requests to buffer, per channel.
     buffer_size: [usize; N],
+    /// The maximum time allowed for a peer to receive an error.
+    error_timeout: Duration,
 }
 
 impl<const N: usize> IoCoreBuilder<N> {
@@ -388,6 +400,7 @@ impl<const N: usize> IoCoreBuilder<N> {
         Self {
             protocol,
             buffer_size: [default_buffer_size; N],
+            error_timeout: Duration::from_secs(10),
         }
     }
 
@@ -401,6 +414,15 @@ impl<const N: usize> IoCoreBuilder<N> {
 
         self.buffer_size[channel.get() as usize] = size;
 
+        self
+    }
+
+    /// Sets the maximum time a peer is allowed to take to receive an error.
+    ///
+    /// This is a grace time given to peers to be notified of bad behavior before the connection
+    /// will be closed.
+    pub const fn error_timeout(mut self, error_timeout: Duration) -> Self {
+        self.error_timeout = error_timeout;
         self
     }
 
@@ -418,6 +440,7 @@ impl<const N: usize> IoCoreBuilder<N> {
             buffer: BytesMut::new(),
             next_parse_at: 0,
             pending_error: None,
+            error_timeout: self.error_timeout,
             current_frame: None,
             active_multi_frame: [Default::default(); N],
             ready_queue: Default::default(),
@@ -457,9 +480,9 @@ where
     /// indicating that the connection should be closed or has been closed.
     pub async fn next_event(&mut self) -> Result<Option<IoEvent>, CoreError> {
         if let Some(ref mut pending_error) = self.pending_error {
-            self.writer
-                .write_all_buf(pending_error)
+            tokio::time::timeout(self.error_timeout, self.writer.write_all_buf(pending_error))
                 .await
+                .map_err(|_elapsed| CoreError::ErrorWriteTimeout)?
                 .map_err(CoreError::WriteFailed)?;
 
             // We succeeded writing, clear the error.
