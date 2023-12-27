@@ -245,8 +245,8 @@ pub struct IoCore<const N: usize, R, W> {
     ///
     /// Used to ensure we don't attempt to parse too often.
     next_parse_at: usize,
-    /// Whether or not we are shutting down due to an error.
-    shutting_down_due_to_err: bool,
+    /// The error queued to be sent before shutting down.
+    pending_error: Option<OutgoingFrame>,
 
     /// The frame in the process of being sent, which may be partially transferred already.
     current_frame: Option<OutgoingFrame>,
@@ -417,7 +417,7 @@ impl<const N: usize> IoCoreBuilder<N> {
             writer,
             buffer: BytesMut::new(),
             next_parse_at: 0,
-            shutting_down_due_to_err: false,
+            pending_error: None,
             current_frame: None,
             active_multi_frame: [Default::default(); N],
             ready_queue: Default::default(),
@@ -456,6 +456,21 @@ where
     /// Polling of this function must continue only until `Err(_)` or `Ok(None)` is returned,
     /// indicating that the connection should be closed or has been closed.
     pub async fn next_event(&mut self) -> Result<Option<IoEvent>, CoreError> {
+        if let Some(ref mut pending_error) = self.pending_error {
+            self.writer
+                .write_all_buf(pending_error)
+                .await
+                .map_err(CoreError::WriteFailed)?;
+
+            // We succeeded writing, clear the error.
+            let peers_crime = self
+                .pending_error
+                .take()
+                .expect("pending_error should not have disappeared")
+                .header();
+            return Err(CoreError::RemoteProtocolViolation(peers_crime));
+        }
+
         loop {
             self.process_dirty_channels()?;
 
@@ -520,7 +535,7 @@ where
                 }
 
                 // Reading incoming data.
-                read_result = read_until_bytesmut(&mut self.reader, &mut self.buffer, self.next_parse_at), if !self.shutting_down_due_to_err => {
+                read_result = read_until_bytesmut(&mut self.reader, &mut self.buffer, self.next_parse_at) => {
                     // Our read function will not return before `read_until_bytesmut` has completed.
                     let read_complete = read_result.map_err(CoreError::ReadFailed)?;
 
@@ -533,7 +548,7 @@ where
                 }
 
                 // Processing locally queued things.
-                incoming = self.receiver.recv(), if !self.shutting_down_due_to_err => {
+                incoming = self.receiver.recv() => {
                     match incoming {
                         Some(item) => {
                             self.handle_incoming_item(item)?;
@@ -571,12 +586,9 @@ where
     /// Ensures the next message sent is an error message.
     ///
     /// Clears all buffers related to sending and closes the local incoming channel.
-    fn inject_error(&mut self, err_msg: OutgoingMessage) {
+    fn inject_error(&mut self, mut err_msg: OutgoingMessage) {
         // Stop accepting any new local data.
         self.receiver.close();
-
-        // Set the error state.
-        self.shutting_down_due_to_err = true;
 
         // We do not continue parsing, ever again.
         self.next_parse_at = usize::MAX;
@@ -589,8 +601,15 @@ where
             queue.clear();
         }
 
-        // Ensure the error message is the next frame sent.
-        self.ready_queue.push_front(err_msg.frames());
+        // Ensure the error message is the next frame sent, truncating as needed.
+        let max_frame_size = self.juliet.max_frame_size();
+        err_msg.truncate_to_single_frame(max_frame_size);
+        let (frame, _remainder) = err_msg.frames().next_owned(max_frame_size);
+        debug_assert!(
+            _remainder.is_none(),
+            "should not have more than one frame after truncating to fit into single frame"
+        );
+        self.pending_error = Some(frame);
     }
 
     /// Processes a completed read into a potential event.
@@ -1074,6 +1093,8 @@ impl Handle {
     ///
     /// Enqueuing an error causes the [`IoCore`] to begin shutting down immediately, only making an
     /// effort to finish sending the error before doing so.
+    ///
+    /// If payload exceeds what is possible to send in a single frame, it is truncated.
     pub fn enqueue_error(
         &self,
         channel: ChannelId,
