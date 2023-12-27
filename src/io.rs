@@ -264,7 +264,7 @@ pub struct IoCore<const N: usize, R, W> {
     dirty_channels: BTreeSet<ChannelId>,
 }
 
-/// Shared data between a handles and the core itself.
+/// Shared data between handles and the core itself.
 #[derive(Debug)]
 #[repr(transparent)]
 struct IoShared<const N: usize> {
