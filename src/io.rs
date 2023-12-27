@@ -504,7 +504,6 @@ where
 
                     write_result.map_err(CoreError::WriteFailed)?;
 
-                    // If we just finished sending an error, it's time to exit.
                     let frame_sent = self.current_frame.take().unwrap();
 
                     #[cfg(feature = "tracing")]
