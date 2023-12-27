@@ -539,8 +539,7 @@ where
                             self.handle_incoming_item(item)?;
                         }
                         None => {
-                            // If the receiver was closed it means that we locally shut down the
-                            // connection.
+                            // If the receiver was closed we locally shut down the connection.
                             #[cfg(feature = "tracing")]
                             tracing::info!("local shutdown");
                             return Ok(None);
