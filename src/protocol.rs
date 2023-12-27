@@ -95,10 +95,17 @@ impl MaxFrameSize {
         self.0 as usize
     }
 
-    /// Returns the maximum frame size without the header size.
+    /// Returns the maximum frame size with the header size subtracted.
     #[inline(always)]
     pub const fn without_header(self) -> usize {
         self.get_usize() - Header::SIZE
+    }
+
+    /// Returns the maximum frame size with the preamble size subtracted, assuming it includes a
+    /// payload length for `payload_len`.
+    #[inline(always)]
+    pub const fn without_preamble(self, payload_len: u32) -> usize {
+        self.without_header() - Varint32::length_of(payload_len)
     }
 }
 
@@ -1017,8 +1024,7 @@ pub const fn payload_is_multi_frame(max_frame_size: MaxFrameSize, payload_len: u
         "payload cannot exceed `u32::MAX`"
     );
 
-    payload_len as u64 + Header::SIZE as u64 + (Varint32::encode(payload_len as u32)).len() as u64
-        > max_frame_size.get() as u64
+    max_frame_size.without_preamble(payload_len as u32) < payload_len
 }
 
 #[cfg(test)]
