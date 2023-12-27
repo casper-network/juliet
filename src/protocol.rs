@@ -22,7 +22,7 @@
 mod multiframe;
 mod outgoing_message;
 
-use std::{collections::HashSet, fmt::Display, num::NonZeroU32};
+use std::{collections::HashSet, fmt::Display};
 
 use bytes::{Buf, Bytes, BytesMut};
 use thiserror::Error;
@@ -35,7 +35,7 @@ use crate::{
     util::{Index, PayloadFormat},
     varint::{decode_varint32, Varint32},
     ChannelConfiguration, ChannelId, Id,
-    Outcome::{self, Fatal, Incomplete, Success},
+    Outcome::{self, Fatal, Success},
 };
 
 /// A channel ID to fill in when the channel is actually unknown or not relevant.
@@ -742,9 +742,9 @@ impl<const N: usize> JulietProtocol<N> {
     /// Any successful frame read will cause `buffer` to be advanced by the length of the frame,
     /// thus eventually freeing the data if not held elsewhere.
     ///
-    /// **Important**: This functions `Err` value is an [`OutgoingMessage`] to be sent to the peer.
-    /// It must be the final message sent and should be sent as soon as possible, with the
-    /// connection being close afterwards.
+    /// **Important**: This function's `Err` value is an [`OutgoingMessage`], to be sent to the
+    /// peer. It must be the final message sent and should be sent as soon as possible, with the
+    /// connection being closed afterwards.
     pub fn process_incoming(
         &mut self,
         buffer: &mut BytesMut,
@@ -753,7 +753,7 @@ impl<const N: usize> JulietProtocol<N> {
         loop {
             // We do not have enough data to extract a header, indicate and return.
             if buffer.len() < Header::SIZE {
-                return Incomplete(NonZeroU32::new((Header::SIZE - buffer.len()) as u32).unwrap());
+                return Outcome::incomplete(Header::SIZE - buffer.len());
             }
 
             let header_raw: [u8; Header::SIZE] = buffer[0..Header::SIZE].try_into().unwrap();
@@ -810,6 +810,7 @@ impl<const N: usize> JulietProtocol<N> {
                     }
                     _ => {
                         log_frame!(header);
+                        buffer.advance(Header::SIZE);
                         return Success(CompletedRead::ErrorReceived { header, data: None });
                     }
                 }
@@ -901,11 +902,8 @@ impl<const N: usize> JulietProtocol<N> {
                     }
                 }
                 Kind::ResponsePl => {
-                    let is_new_response =
-                        channel.current_multiframe_receiver.is_new_transfer(header);
-
                     // Ensure it is not a bogus response.
-                    if is_new_response && !channel.outgoing_requests.contains(&header.id()) {
+                    if !channel.outgoing_requests.contains(&header.id()) {
                         return err_msg(header, ErrorKind::FictitiousRequest);
                     }
 
@@ -918,13 +916,10 @@ impl<const N: usize> JulietProtocol<N> {
                             ErrorKind::ResponseTooLarge
                         ));
 
-                    // If we made it to this point, we have consumed the frame.
-                    if is_new_response && !channel.outgoing_requests.remove(&header.id()) {
-                        return err_msg(header, ErrorKind::FictitiousRequest);
-                    }
-
                     if let Some(payload) = multiframe_outcome {
-                        // Message is complete.
+                        // Message is complete. Remove it from the outgoing requests.
+                        channel.outgoing_requests.remove(&header.id());
+
                         let payload = payload.freeze();
 
                         return Success(CompletedRead::ReceivedResponse {

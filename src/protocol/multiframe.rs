@@ -222,7 +222,7 @@ impl InitialFrameData {
 #[inline(always)]
 fn detect_starting_segment(
     header: Header,
-    buffer: &BytesMut,
+    buffer: &[u8],
     max_frame_size: MaxFrameSize,
     max_payload_size: u32,
     payload_exceeded_error_kind: ErrorKind,
