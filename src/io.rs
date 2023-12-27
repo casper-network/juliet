@@ -649,7 +649,7 @@ where
     /// Handles a new item to send out that arrived through the incoming channel.
     fn handle_incoming_item(&mut self, item: QueuedItem) -> Result<(), LocalProtocolViolation> {
         // Check if the item is sendable immediately.
-        if let Some(channel) = item_should_wait(&item, &self.juliet, &self.active_multi_frame) {
+        if let Some(channel) = item_should_wait(&item, &self.juliet, &self.active_multi_frame)? {
             #[cfg(feature = "tracing")]
             tracing::debug!(%item, "postponing send");
             self.wait_queue[channel.get() as usize].push_back(item);
@@ -793,7 +793,7 @@ where
                     CoreError::InternalError("did not expect wait_queue to disappear"),
                 )?;
 
-                if item_should_wait(&item, &self.juliet, &self.active_multi_frame).is_some() {
+                if item_should_wait(&item, &self.juliet, &self.active_multi_frame)?.is_some() {
                     // Put it right back into the queue.
                     self.wait_queue[channel.get() as usize].push_back(item);
                 } else {
@@ -813,17 +813,14 @@ fn item_should_wait<const N: usize>(
     item: &QueuedItem,
     juliet: &JulietProtocol<N>,
     active_multi_frame: &[Option<Header>; N],
-) -> Option<ChannelId> {
+) -> Result<Option<ChannelId>, LocalProtocolViolation> {
     let (payload, channel) = match item {
         QueuedItem::Request {
             channel, payload, ..
         } => {
             // Check if we cannot schedule due to the message exceeding the request limit.
-            if !juliet
-                .allowed_to_send_request(*channel)
-                .expect("should not be called with invalid channel")
-            {
-                return Some(*channel);
+            if !juliet.allowed_to_send_request(*channel)? {
+                return Ok(Some(*channel));
             }
 
             (payload, channel)
@@ -835,7 +832,7 @@ fn item_should_wait<const N: usize>(
         // Other messages are always ready.
         QueuedItem::RequestCancellation { .. }
         | QueuedItem::ResponseCancellation { .. }
-        | QueuedItem::Error { .. } => return None,
+        | QueuedItem::Error { .. } => return Ok(None),
     };
 
     let active_multi_frame = active_multi_frame[channel.get() as usize];
@@ -845,13 +842,13 @@ fn item_should_wait<const N: usize>(
     if active_multi_frame.is_some() {
         if let Some(payload) = payload {
             if payload_is_multi_frame(juliet.max_frame_size(), payload.len()) {
-                return Some(*channel);
+                return Ok(Some(*channel));
             }
         }
     }
 
     // Otherwise, this should be a legitimate add to the run queue.
-    None
+    Ok(None)
 }
 
 /// A handle to the input queue to the [`IoCore`] that allows sending requests and responses.
