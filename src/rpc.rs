@@ -847,7 +847,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BinaryHeap, sync::Arc, time::Duration};
+    use std::{collections::BinaryHeap, fmt::Write, sync::Arc, time::Duration};
 
     use bytes::Bytes;
     use futures::FutureExt;
@@ -1167,5 +1167,119 @@ mod tests {
         let mut empty_heap = BinaryHeap::<u32>::new();
 
         assert!(drain_heap_while(&mut empty_heap, |_| true).next().is_none());
+    }
+
+    #[derive(Debug)]
+
+    struct LargeVolumeTestSpec<const N: usize> {
+        max_frame_size: u32,
+        request_limit: u16,
+        payload_steps: u32,
+        payload_range: u32,
+        pipe_buffer: usize,
+        timeout: Duration,
+    }
+
+    impl<const N: usize> Default for LargeVolumeTestSpec<N> {
+        fn default() -> Self {
+            Self {
+                max_frame_size: 37,
+                request_limit: 5,
+                payload_steps: 20,
+                payload_range: 10,
+                pipe_buffer: 80,
+                timeout: Duration::from_secs(10),
+            }
+        }
+    }
+
+    impl<const N: usize> LargeVolumeTestSpec<N> {
+        fn max_payload_size(&self) -> u32 {
+            self.payload_steps * self.payload_range
+        }
+
+        fn default_buffer_size(&self) -> usize {
+            self.request_limit as usize * 2
+        }
+
+        /// Setup function for RPC testing.
+        ///
+        /// Creates two "nodes" linked using an in-memory transport, hopefully with deterministic
+        /// behavior.
+        fn mk_rpc(&self) -> (CompleteSetup<N>, CompleteSetup<N>) {
+            let channel_cfg = ChannelConfiguration::new()
+                .with_max_request_payload_size(self.max_payload_size())
+                .with_max_response_payload_size(self.max_payload_size())
+                .with_request_limit(self.request_limit);
+
+            let protocol_builder = ProtocolBuilder::with_default_channel_config(channel_cfg)
+                .max_frame_size(self.max_frame_size);
+            let rpc_builder: RpcBuilder<N> =
+                RpcBuilder::new(IoCoreBuilder::with_default_buffer_size(
+                    protocol_builder,
+                    self.default_buffer_size(),
+                ))
+                .with_bubble_timeouts(true)
+                .with_default_timeout(self.timeout);
+
+            let (alice_stream, bob_stream) = tokio::io::duplex(self.pipe_buffer);
+
+            let alice = CompleteSetup::new(&rpc_builder, alice_stream);
+            let bob = CompleteSetup::new(&rpc_builder, bob_stream);
+
+            (alice, bob)
+        }
+    }
+
+    struct CompleteSetup<const N: usize> {
+        client: JulietRpcClient<N>,
+        server: JulietRpcServer<N, ReadHalf<DuplexStream>, WriteHalf<DuplexStream>>,
+    }
+
+    impl<const N: usize> CompleteSetup<N> {
+        fn new(builder: &RpcBuilder<N>, duplex: DuplexStream) -> Self {
+            let (reader, writer) = tokio::io::split(duplex);
+            let (client, server) = builder.build(reader, writer);
+            CompleteSetup { client, server }
+        }
+    }
+
+    #[tokio::test]
+    async fn large_volume_setup_smoke_test() {
+        let (mut alice, mut bob) = LargeVolumeTestSpec::<4>::default().mk_rpc();
+
+        tokio::spawn(async move {
+            while let Some(request) = alice
+                .server
+                .next_request()
+                .await
+                .expect("next request failed")
+            {
+                // Simply echo back the payload.
+                let pl = request.payload().clone();
+                request.respond(pl);
+            }
+        });
+
+        tokio::spawn(async move { bob.server.next_request().await });
+
+        for i in 0i32..10 {
+            let num: Box<[u8]> = i.to_be_bytes().into();
+            let pl = Bytes::from(num);
+            let handle = bob
+                .client
+                .create_request(ChannelId::new(2))
+                .with_payload(pl.clone())
+                .queue_for_sending()
+                .await;
+
+            let resp = handle
+                .wait_for_response()
+                .await
+                .expect("should get response")
+                .expect("should have payload");
+
+            assert_eq!(resp, pl);
+        }
     }
 }
