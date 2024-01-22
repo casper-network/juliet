@@ -847,7 +847,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BinaryHeap, fmt::Write, sync::Arc, time::Duration};
+    use std::{collections::BinaryHeap, sync::Arc, time::Duration};
 
     use bytes::Bytes;
     use futures::FutureExt;
