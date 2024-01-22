@@ -25,7 +25,7 @@
 //! [`IoCore`] to close the connection.
 
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::VecDeque,
     fmt::{self, Display, Formatter},
     io,
     sync::{
@@ -270,8 +270,6 @@ pub struct IoCore<const N: usize, R, W> {
     receiver: UnboundedReceiver<QueuedItem>,
     /// Mapping for outgoing requests, mapping internal IDs to public ones.
     request_map: BiMap<IoId, (ChannelId, Id)>,
-    /// A set of channels whose wait queues should be checked again for data to send.
-    dirty_channels: BTreeSet<ChannelId>,
 }
 
 /// Shared data between handles and the core itself.
@@ -447,7 +445,6 @@ impl<const N: usize> IoCoreBuilder<N> {
             wait_queue: array_init::array_init(|_| Default::default()),
             receiver,
             request_map: Default::default(),
-            dirty_channels: Default::default(),
         };
 
         let shared = Arc::new(IoShared {
@@ -495,7 +492,11 @@ where
         }
 
         loop {
-            self.process_dirty_channels()?;
+            for c in (0..N as u8).map(ChannelId::new) {
+                // TODO: Make processing smarter so that we do not go through all channels every
+                //       time this loop runs.
+                self.process_wait_queue(c)?;
+            }
 
             if self.next_parse_at <= self.buffer.remaining() {
                 // Simplify reasoning about this code.
@@ -790,9 +791,6 @@ where
                     // Once the scheduled frame is processed, we will finished the multi-frame
                     // transfer, so we can allow for the next multi-frame transfer to be scheduled.
                     self.active_multi_frame[about_to_finish.channel().get() as usize] = None;
-
-                    // There is a chance another multi-frame messages became ready now.
-                    self.dirty_channels.insert(about_to_finish.channel());
                 }
             }
         }
@@ -801,32 +799,43 @@ where
         Ok(())
     }
 
-    /// Process the wait queue of all channels marked dirty, promoting messages that are ready to be
-    /// sent to the ready queue.
-    fn process_dirty_channels(&mut self) -> Result<(), CoreError> {
-        while let Some(channel) = self.dirty_channels.pop_first() {
-            let wait_queue_len = self.wait_queue[channel.get() as usize].len();
+    /// Process the wait queue of a given channel, promoting messages that are ready to be sent.
+    fn process_wait_queue(&mut self, channel: ChannelId) -> Result<(), LocalProtocolViolation> {
+        let chan = &mut self.wait_queue[channel.get() as usize];
+        let mut max_items_to_check = chan.len();
+        #[cfg(feature = "tracing")]
+        tracing::trace!(%channel, "processing dirty channel");
 
-            // The code below is not as bad it looks complexity wise, anticipating two common cases:
-            //
-            // 1. A multi-frame read has finished, with capacity for requests to spare. Only
-            //    multi-frame requests will be waiting in the wait queue, so we will likely pop the
-            //    first item, only scanning the rest once.
-            // 2. One or more requests finished, so we also have a high chance of picking the first
-            //    few requests out of the queue.
+        // The code below is not as bad it looks complexity wise, anticipating two common cases:
+        //
+        // 1. A multi-frame read has finished, with capacity for requests to spare. Only
+        //    multi-frame requests will be waiting in the wait queue, so we will likely pop the
+        //    first item, only scanning the rest once.
+        // 2. One or more requests finished, so we also have a high chance of picking the first
+        //    few requests out of the queue.
+        let mut ready = Vec::new();
 
-            for _ in 0..(wait_queue_len) {
-                let item = self.wait_queue[channel.get() as usize].pop_front().ok_or(
-                    CoreError::InternalError("did not expect wait_queue to disappear"),
-                )?;
-
-                if item_should_wait(&item, &self.juliet, &self.active_multi_frame)?.is_some() {
-                    // Put it right back into the queue.
-                    self.wait_queue[channel.get() as usize].push_back(item);
-                } else {
-                    self.send_to_ready_queue(item)?;
-                }
+        while let Some(item) = chan.pop_front() {
+            if item_should_wait(&item, &self.juliet, &self.active_multi_frame)?.is_some() {
+                #[cfg(feature = "tracing")]
+                tracing::trace!(%item, "still waiting");
+                // Put it right back into the queue.
+                chan.push_back(item);
+            } else {
+                #[cfg(feature = "tracing")]
+                tracing::debug!(%item, "became ready");
+                ready.push(item);
             }
+
+            // Ensure we do not loop endlessly if we cannot find anything.
+            max_items_to_check -= 1;
+            if max_items_to_check == 0 {
+                break;
+            }
+        }
+
+        for item in ready {
+            self.send_to_ready_queue(item)?;
         }
 
         Ok(())
