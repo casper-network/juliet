@@ -704,9 +704,6 @@ where
     }
 
     /// Sends an item directly to the ready queue, causing it to be sent out eventually.
-    ///
-    /// `item` is passed as a mutable reference for compatibility with functions like `retain_mut`,
-    /// but will be left with all payloads removed, thus should likely not be reused.
     fn send_to_ready_queue(&mut self, item: QueuedItem) -> Result<(), LocalProtocolViolation> {
         match item {
             QueuedItem::Request {
