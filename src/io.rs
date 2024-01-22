@@ -552,6 +552,13 @@ where
                             // We finished sending an error frame, time to exit.
                             return Err(CoreError::RemoteProtocolViolation(frame_sent.header()));
                         }
+
+                        // TODO: We should restrict the dirty-queue processing here a little bit
+                        //       (only check when completing a multi-frame message).
+                        // A message has completed sending, process the wait queue in case we have
+                        // to start sending a multi-frame message like a response that was delayed
+                        // only because of the one-multi-frame-per-channel restriction.
+                        self.process_wait_queue(frame_sent.header().channel())?;
                     } else {
                         #[cfg(feature = "tracing")]
                         tracing::error!("current frame should not disappear");
