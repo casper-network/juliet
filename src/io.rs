@@ -492,12 +492,6 @@ where
         }
 
         loop {
-            for c in (0..N as u8).map(ChannelId::new) {
-                // TODO: Make processing smarter so that we do not go through all channels every
-                //       time this loop runs.
-                self.process_wait_queue(c)?;
-            }
-
             if self.next_parse_at <= self.buffer.remaining() {
                 // Simplify reasoning about this code.
                 self.next_parse_at = 0;
@@ -512,6 +506,12 @@ where
                         self.inject_error(err_msg);
                     }
                     Outcome::Success(successful_read) => {
+                        // If we received a response, we may have additional capacity available to
+                        // send out more requests, so we process the wait queue.
+                        if let CompletedRead::ReceivedResponse { channel, .. } = &successful_read {
+                            self.process_wait_queue(*channel)?;
+                        }
+
                         // Check if we have produced an event.
                         return self.handle_completed_read(successful_read).map(Some);
                     }
@@ -764,14 +764,15 @@ where
 
     /// Clears a potentially finished frame and returns the next frame to send.
     ///
-    /// Returns `None` if no frames are ready to be sent. Note that there may be frames waiting
-    /// that cannot be sent due them being multi-frame messages when there already is a multi-frame
-    /// message in progress, or request limits are being hit.
+    /// Note that there may be frames waiting that cannot be sent due them being multi-frame
+    /// messages when there already is a multi-frame message in progress, or request limits are
+    /// being hit.
+    ///
+    /// The caller needs to ensure that the current frame is empty (i.e. has been sent).
     fn ready_next_frame(&mut self) -> Result<(), LocalProtocolViolation> {
         debug_assert!(self.current_frame.is_none()); // Must be guaranteed by caller.
 
-        // Try to fetch a frame from the ready queue. If there is nothing, we are stuck until the
-        // next time the wait queue is processed or new data arrives.
+        // Try to fetch a frame from the ready queue.
         let (frame, additional_frames) = match self.ready_queue.pop_front() {
             Some(item) => item,
             None => return Ok(()),
@@ -791,6 +792,9 @@ where
                     // Once the scheduled frame is processed, we will finished the multi-frame
                     // transfer, so we can allow for the next multi-frame transfer to be scheduled.
                     self.active_multi_frame[about_to_finish.channel().get() as usize] = None;
+
+                    // Ensure the next multi-frame message gets scheduled, if available.
+                    self.process_wait_queue(about_to_finish.channel())?;
                 }
             }
         }
