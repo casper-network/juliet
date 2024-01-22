@@ -1169,15 +1169,33 @@ mod tests {
         assert!(drain_heap_while(&mut empty_heap, |_| true).next().is_none());
     }
 
-    #[derive(Debug)]
+    /// Parameters for a "large volume" test.
+    #[derive(Copy, Clone, Debug)]
 
     struct LargeVolumeTestSpec<const N: usize> {
+        /// Maximum frame size to use.
         max_frame_size: u32,
+        /// Per-channel in-flight request limit.
+        ///
+        /// All channels use the same in-flight limit.
         request_limit: u16,
-        payload_steps: u32,
-        payload_range: u32,
+        /// The "step size" of a payload.
+        ///
+        /// Any payload from Bob to Alice will have a size that is a multiple of
+        /// `payload_step_size`.
+        payload_step_size: u32,
+        /// Maximum multiplier for the payload.
+        ///
+        /// A random multiplier is chosen for payloads up to `payload_max_multiplier` for those sent
+        /// from Bob to Alice.
+        payload_max_multiplier: u32,
+        /// How many bytes to buffer in the internal in-memory buffer of the transport.
         pipe_buffer: usize,
+        /// How many bytes of payload data to send before ending the test.
+        ///
+        /// Measures the amount of data Alice receives from Bob.
         min_send_bytes: usize,
+        /// Timeout for a single message.
         timeout: Duration,
     }
 
@@ -1186,8 +1204,8 @@ mod tests {
             Self {
                 max_frame_size: 37,
                 request_limit: 3,
-                payload_steps: 20,
-                payload_range: 10,
+                payload_step_size: 20,
+                payload_max_multiplier: 10,
                 pipe_buffer: 80,
                 min_send_bytes: 1024 * 1024,
                 timeout: Duration::from_millis(250),
@@ -1197,11 +1215,19 @@ mod tests {
 
     impl<const N: usize> LargeVolumeTestSpec<N> {
         fn max_payload_size(&self) -> u32 {
-            self.payload_steps * self.payload_range
+            self.payload_step_size * self.payload_max_multiplier
         }
 
         fn default_buffer_size(&self) -> usize {
             self.request_limit as usize * 2
+        }
+
+        /// Generates a "random" payload size.
+        ///
+        /// `count` is used as a seed, using very weak randomness.
+        fn gen_payload_size(&self, count: usize) -> usize {
+            let multiplier = ((count * 239) % self.payload_max_multiplier as usize) + 1;
+            self.payload_step_size as usize * multiplier
         }
 
         /// Setup function for RPC testing.
@@ -1294,13 +1320,17 @@ mod tests {
 
         let spec = LargeVolumeTestSpec {
             request_limit: 1,
+            max_frame_size: 17,
+            // 10 Bytes requests means they all fit in one frame.
+            payload_max_multiplier: 1,
+            payload_step_size: 10,
             ..Default::default()
         };
 
-        large_volume_test::<1>(&spec).await;
+        large_volume_test::<1>(spec).await;
     }
 
-    async fn large_volume_test<const N: usize>(spec: &LargeVolumeTestSpec<N>) {
+    async fn large_volume_test<const N: usize>(spec: LargeVolumeTestSpec<N>) {
         // Our setup is as follows:
         //
         // 1. All messages are `ACK`'d with empty responses.
@@ -1343,7 +1373,7 @@ mod tests {
         );
 
         let small_payload: Bytes = iter::repeat(0xFF)
-            .take(spec.payload_steps as usize / 2)
+            .take(spec.max_frame_size as usize / 2)
             .collect::<Vec<u8>>()
             .into();
 
@@ -1398,10 +1428,6 @@ mod tests {
         );
 
         // Bob server.
-        let todo_payload: Bytes = iter::repeat(0xFF)
-            .take(spec.payload_steps as usize / 2)
-            .collect::<Vec<u8>>()
-            .into();
         let bob_server = tokio::spawn(
             async move {
                 let mut bob_counter = 0;
@@ -1415,11 +1441,17 @@ mod tests {
                     // Just discard the message payload, but acknowledge receiving it.
                     request.respond(None);
 
+                    let payload_size = spec.gen_payload_size(bob_counter);
+                    let large_payload: Bytes = iter::repeat(0xFF)
+                        .take(payload_size)
+                        .collect::<Vec<u8>>()
+                        .into();
+
                     // Send another request back.
                     let bobs_request: RequestGuard = bob
                         .client
                         .create_request(channel)
-                        .with_payload(todo_payload.clone())
+                        .with_payload(large_payload.clone())
                         .queue_for_sending()
                         .await;
 
@@ -1451,7 +1483,6 @@ mod tests {
                             });
                         }
                     }
-                    // TODO: Put in substantial payload.
                 }
 
                 info!("exiting");
