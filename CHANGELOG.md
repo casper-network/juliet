@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * There is now a timeout for how long a peer can take to accept an error message.
 * Application errors (`ErrorKind::OTHER`) are now truncated to fit into a single frame.
 
+### Fixed
+
+* The IO layer will no longer drop frames if no multi-frame payloads are sent while a non-multi-frame payload has been moved to the wait queue due to exceeding the in-flight request limit.
+
 ## [0.2.0] - 2023-11-24
 
 ### Changed

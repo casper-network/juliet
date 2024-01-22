@@ -700,18 +700,14 @@ where
 
         #[cfg(feature = "tracing")]
         tracing::debug!(%item, "ready to send");
-        self.send_to_ready_queue(item, false)
+        self.send_to_ready_queue(item)
     }
 
     /// Sends an item directly to the ready queue, causing it to be sent out eventually.
     ///
     /// `item` is passed as a mutable reference for compatibility with functions like `retain_mut`,
     /// but will be left with all payloads removed, thus should likely not be reused.
-    fn send_to_ready_queue(
-        &mut self,
-        item: QueuedItem,
-        check_for_cancellation: bool,
-    ) -> Result<(), LocalProtocolViolation> {
+    fn send_to_ready_queue(&mut self, item: QueuedItem) -> Result<(), LocalProtocolViolation> {
         match item {
             QueuedItem::Request {
                 io_id,
@@ -719,21 +715,10 @@ where
                 payload,
                 permit,
             } => {
-                // "Chase" our own requests here -- if the request was still in the wait queue,
-                // we can cancel it by checking if the `IoId` has been removed in the meantime.
-                //
-                // Note that this only cancels multi-frame requests.
-                if check_for_cancellation && !self.request_map.contains_left(&io_id) {
-                    // We just ignore the request, as it has been cancelled in the meantime.
-                    // TODO: This feature breaks the local API, as we still expect to receive a
-                    //       cancellation. `rpc` is likely not affected, but someone using the
-                    //       `io` API might be.
-                } else {
-                    let msg = self.juliet.create_request(channel, payload)?;
-                    let id = msg.header().id();
-                    self.request_map.insert(io_id, (channel, id));
-                    self.ready_queue.push_back(msg.frames());
-                }
+                let msg = self.juliet.create_request(channel, payload)?;
+                let id = msg.header().id();
+                self.request_map.insert(io_id, (channel, id));
+                self.ready_queue.push_back(msg.frames());
 
                 drop(permit);
             }
@@ -842,7 +827,7 @@ where
                     // Put it right back into the queue.
                     self.wait_queue[channel.get() as usize].push_back(item);
                 } else {
-                    self.send_to_ready_queue(item, true)?;
+                    self.send_to_ready_queue(item)?;
                 }
             }
         }
