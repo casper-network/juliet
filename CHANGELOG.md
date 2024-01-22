@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 * The IO layer will no longer drop frames if no multi-frame payloads are sent while a non-multi-frame payload has been moved to the wait queue due to exceeding the in-flight request limit.
+* The outgoing request queue will now process much faster when filled with large amounts of requests.
 
 ## [0.2.0] - 2023-11-24
 
