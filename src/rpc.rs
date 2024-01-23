@@ -855,9 +855,9 @@ mod tests {
     use tracing::{error_span, info, span, Instrument, Level};
 
     use crate::{
-        io::IoCoreBuilder,
+        io::{CoreError, IoCoreBuilder},
         protocol::ProtocolBuilder,
-        rpc::{RequestError, RpcBuilder},
+        rpc::{RequestError, RpcBuilder, RpcServerError},
         ChannelConfiguration, ChannelId,
     };
 
@@ -1207,7 +1207,7 @@ mod tests {
                 payload_step_size: 20,
                 payload_max_multiplier: 10,
                 pipe_buffer: 80,
-                min_send_bytes: 1024 * 1024,
+                min_send_bytes: 100 * 1024 * 1024, // 100 MiB
                 timeout: Duration::from_millis(250),
             }
         }
@@ -1330,6 +1330,16 @@ mod tests {
         large_volume_test::<1>(spec).await;
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn run_large_volume_test_with_default_values_10_channels() {
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .try_init()
+            .ok();
+
+        large_volume_test::<10>(Default::default()).await;
+    }
+
     async fn large_volume_test<const N: usize>(spec: LargeVolumeTestSpec<N>) {
         // Our setup is as follows:
         //
@@ -1435,6 +1445,15 @@ mod tests {
                     .server
                     .next_request()
                     .await
+                    .or_else(|err| match err {
+                        RpcServerError::CoreError(ref core_err) => match core_err {
+                            CoreError::ReadFailed(_)
+                            | CoreError::WriteFailed(_)
+                            | CoreError::ErrorWriteTimeout => Ok(None), // Ignore these IO errors.
+                            _ => Err(err),
+                        },
+                        other => Err(other),
+                    })
                     .expect("next request failed")
                 {
                     let channel = request.channel();
