@@ -25,13 +25,14 @@
 //! [`IoCore`] to close the connection.
 
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::VecDeque,
     fmt::{self, Display, Formatter},
     io,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
     },
+    time::Duration,
 };
 
 use bimap::BiMap;
@@ -54,6 +55,9 @@ use crate::{
     util::PayloadFormat,
     ChannelId, Id, Outcome,
 };
+
+/// Maximum number of bytes to pre-allocate in buffers.
+const MAX_ALLOC: usize = 32 * 1024; // 32 KiB
 
 /// An item in the outgoing queue.
 ///
@@ -181,6 +185,13 @@ pub enum CoreError {
     /// Failed to write using underlying writer.
     #[error("write failed")]
     WriteFailed(#[source] io::Error),
+
+    /// Could not send an error in time.
+    ///
+    /// A limit is imposed on how long a peer may take to receive an error to avoid denial of
+    /// service through receiving these very slowly.
+    #[error("peer did not accept error in timely manner")]
+    ErrorWriteTimeout,
     /// Remote peer will/has disconnect(ed), but sent us an error message before.
     #[error("remote peer sent error [channel {}/id {}]: {} (payload: {} bytes)",
         header.channel(),
@@ -245,8 +256,10 @@ pub struct IoCore<const N: usize, R, W> {
     ///
     /// Used to ensure we don't attempt to parse too often.
     next_parse_at: usize,
-    /// Whether or not we are shutting down due to an error.
-    shutting_down_due_to_err: bool,
+    /// The error queued to be sent before shutting down.
+    pending_error: Option<OutgoingFrame>,
+    /// The maximum time allowed for a peer to receive an error.
+    error_timeout: Duration,
 
     /// The frame in the process of being sent, which may be partially transferred already.
     current_frame: Option<OutgoingFrame>,
@@ -260,11 +273,9 @@ pub struct IoCore<const N: usize, R, W> {
     receiver: UnboundedReceiver<QueuedItem>,
     /// Mapping for outgoing requests, mapping internal IDs to public ones.
     request_map: BiMap<IoId, (ChannelId, Id)>,
-    /// A set of channels whose wait queues should be checked again for data to send.
-    dirty_channels: BTreeSet<ChannelId>,
 }
 
-/// Shared data between a handles and the core itself.
+/// Shared data between handles and the core itself.
 #[derive(Debug)]
 #[repr(transparent)]
 struct IoShared<const N: usize> {
@@ -370,6 +381,8 @@ pub struct IoCoreBuilder<const N: usize> {
     protocol: ProtocolBuilder<N>,
     /// Number of additional requests to buffer, per channel.
     buffer_size: [usize; N],
+    /// The maximum time allowed for a peer to receive an error.
+    error_timeout: Duration,
 }
 
 impl<const N: usize> IoCoreBuilder<N> {
@@ -388,6 +401,7 @@ impl<const N: usize> IoCoreBuilder<N> {
         Self {
             protocol,
             buffer_size: [default_buffer_size; N],
+            error_timeout: Duration::from_secs(10),
         }
     }
 
@@ -404,6 +418,15 @@ impl<const N: usize> IoCoreBuilder<N> {
         self
     }
 
+    /// Sets the maximum time a peer is allowed to take to receive an error.
+    ///
+    /// This is a grace time given to peers to be notified of bad behavior before the connection
+    /// will be closed.
+    pub const fn error_timeout(mut self, error_timeout: Duration) -> Self {
+        self.error_timeout = error_timeout;
+        self
+    }
+
     /// Builds a new [`IoCore`] with a [`RequestHandle`].
     ///
     /// See [`IoCore::next_event`] for details on how to handle the core. The [`RequestHandle`] can
@@ -417,14 +440,14 @@ impl<const N: usize> IoCoreBuilder<N> {
             writer,
             buffer: BytesMut::new(),
             next_parse_at: 0,
-            shutting_down_due_to_err: false,
+            pending_error: None,
+            error_timeout: self.error_timeout,
             current_frame: None,
             active_multi_frame: [Default::default(); N],
             ready_queue: Default::default(),
             wait_queue: array_init::array_init(|_| Default::default()),
             receiver,
             request_map: Default::default(),
-            dirty_channels: Default::default(),
         };
 
         let shared = Arc::new(IoShared {
@@ -456,9 +479,22 @@ where
     /// Polling of this function must continue only until `Err(_)` or `Ok(None)` is returned,
     /// indicating that the connection should be closed or has been closed.
     pub async fn next_event(&mut self) -> Result<Option<IoEvent>, CoreError> {
-        loop {
-            self.process_dirty_channels()?;
+        if let Some(ref mut pending_error) = self.pending_error {
+            tokio::time::timeout(self.error_timeout, self.writer.write_all_buf(pending_error))
+                .await
+                .map_err(|_elapsed| CoreError::ErrorWriteTimeout)?
+                .map_err(CoreError::WriteFailed)?;
 
+            // We succeeded writing, clear the error.
+            let peers_crime = self
+                .pending_error
+                .take()
+                .expect("pending_error should not have disappeared")
+                .header();
+            return Err(CoreError::RemoteProtocolViolation(peers_crime));
+        }
+
+        loop {
             if self.next_parse_at <= self.buffer.remaining() {
                 // Simplify reasoning about this code.
                 self.next_parse_at = 0;
@@ -473,6 +509,12 @@ where
                         self.inject_error(err_msg);
                     }
                     Outcome::Success(successful_read) => {
+                        // If we received a response, we may have additional capacity available to
+                        // send out more requests, so we process the wait queue.
+                        if let CompletedRead::ReceivedResponse { channel, .. } = &successful_read {
+                            self.process_wait_queue(*channel)?;
+                        }
+
                         // Check if we have produced an event.
                         return self.handle_completed_read(successful_read).map(Some);
                     }
@@ -504,22 +546,30 @@ where
 
                     write_result.map_err(CoreError::WriteFailed)?;
 
-                    // If we just finished sending an error, it's time to exit.
-                    let frame_sent = self.current_frame.take().unwrap();
-
-                    #[cfg(feature = "tracing")]
-                    {
+                    // Clear `current_frame` via `Option::take` and examine what was sent.
+                    if let Some(frame_sent) = self.current_frame.take() {
+                        #[cfg(feature = "tracing")]
                         tracing::trace!(frame=%frame_sent, "sent");
-                    }
 
-                    if frame_sent.header().is_error() {
-                        // We finished sending an error frame, time to exit.
-                        return Err(CoreError::RemoteProtocolViolation(frame_sent.header()));
+                        if frame_sent.header().is_error() {
+                            // We finished sending an error frame, time to exit.
+                            return Err(CoreError::RemoteProtocolViolation(frame_sent.header()));
+                        }
+
+                        // TODO: We should restrict the dirty-queue processing here a little bit
+                        //       (only check when completing a multi-frame message).
+                        // A message has completed sending, process the wait queue in case we have
+                        // to start sending a multi-frame message like a response that was delayed
+                        // only because of the one-multi-frame-per-channel restriction.
+                        self.process_wait_queue(frame_sent.header().channel())?;
+                    } else {
+                        #[cfg(feature = "tracing")]
+                        tracing::error!("current frame should not disappear");
                     }
                 }
 
                 // Reading incoming data.
-                read_result = read_until_bytesmut(&mut self.reader, &mut self.buffer, self.next_parse_at), if !self.shutting_down_due_to_err => {
+                read_result = read_until_bytesmut(&mut self.reader, &mut self.buffer, self.next_parse_at) => {
                     // Our read function will not return before `read_until_bytesmut` has completed.
                     let read_complete = read_result.map_err(CoreError::ReadFailed)?;
 
@@ -532,14 +582,13 @@ where
                 }
 
                 // Processing locally queued things.
-                incoming = self.receiver.recv(), if !self.shutting_down_due_to_err => {
+                incoming = self.receiver.recv() => {
                     match incoming {
                         Some(item) => {
                             self.handle_incoming_item(item)?;
                         }
                         None => {
-                            // If the receiver was closed it means that we locally shut down the
-                            // connection.
+                            // If the receiver was closed we locally shut down the connection.
                             #[cfg(feature = "tracing")]
                             tracing::info!("local shutdown");
                             return Ok(None);
@@ -554,7 +603,7 @@ where
                             Err(TryRecvError::Disconnected) => {
                                 // While processing incoming items, the last handle was closed.
                                 #[cfg(feature = "tracing")]
-                                tracing::debug!("last local io handle closed, shutting down");
+                                tracing::info!("last local io handle closed, shutting down");
                                 return Ok(None);
                             }
                             Err(TryRecvError::Empty) => {
@@ -571,12 +620,9 @@ where
     /// Ensures the next message sent is an error message.
     ///
     /// Clears all buffers related to sending and closes the local incoming channel.
-    fn inject_error(&mut self, err_msg: OutgoingMessage) {
+    fn inject_error(&mut self, mut err_msg: OutgoingMessage) {
         // Stop accepting any new local data.
         self.receiver.close();
-
-        // Set the error state.
-        self.shutting_down_due_to_err = true;
 
         // We do not continue parsing, ever again.
         self.next_parse_at = usize::MAX;
@@ -589,8 +635,15 @@ where
             queue.clear();
         }
 
-        // Ensure the error message is the next frame sent.
-        self.ready_queue.push_front(err_msg.frames());
+        // Ensure the error message is the next frame sent, truncating as needed.
+        let max_frame_size = self.juliet.max_frame_size();
+        err_msg.truncate_to_single_frame(max_frame_size);
+        let (frame, _remainder) = err_msg.frames().next_owned(max_frame_size);
+        debug_assert!(
+            _remainder.is_none(),
+            "should not have more than one frame after truncating to fit into single frame"
+        );
+        self.pending_error = Some(frame);
     }
 
     /// Processes a completed read into a potential event.
@@ -649,7 +702,7 @@ where
     /// Handles a new item to send out that arrived through the incoming channel.
     fn handle_incoming_item(&mut self, item: QueuedItem) -> Result<(), LocalProtocolViolation> {
         // Check if the item is sendable immediately.
-        if let Some(channel) = item_should_wait(&item, &self.juliet, &self.active_multi_frame) {
+        if let Some(channel) = item_should_wait(&item, &self.juliet, &self.active_multi_frame)? {
             #[cfg(feature = "tracing")]
             tracing::debug!(%item, "postponing send");
             self.wait_queue[channel.get() as usize].push_back(item);
@@ -658,18 +711,11 @@ where
 
         #[cfg(feature = "tracing")]
         tracing::debug!(%item, "ready to send");
-        self.send_to_ready_queue(item, false)
+        self.send_to_ready_queue(item)
     }
 
     /// Sends an item directly to the ready queue, causing it to be sent out eventually.
-    ///
-    /// `item` is passed as a mutable reference for compatibility with functions like `retain_mut`,
-    /// but will be left with all payloads removed, thus should likely not be reused.
-    fn send_to_ready_queue(
-        &mut self,
-        item: QueuedItem,
-        check_for_cancellation: bool,
-    ) -> Result<(), LocalProtocolViolation> {
+    fn send_to_ready_queue(&mut self, item: QueuedItem) -> Result<(), LocalProtocolViolation> {
         match item {
             QueuedItem::Request {
                 io_id,
@@ -677,18 +723,10 @@ where
                 payload,
                 permit,
             } => {
-                // "Chase" our own requests here -- if the request was still in the wait queue,
-                // we can cancel it by checking if the `IoId` has been removed in the meantime.
-                //
-                // Note that this only cancels multi-frame requests.
-                if check_for_cancellation && !self.request_map.contains_left(&io_id) {
-                    // We just ignore the request, as it has been cancelled in the meantime.
-                } else {
-                    let msg = self.juliet.create_request(channel, payload)?;
-                    let id = msg.header().id();
-                    self.request_map.insert(io_id, (channel, id));
-                    self.ready_queue.push_back(msg.frames());
-                }
+                let msg = self.juliet.create_request(channel, payload)?;
+                let id = msg.header().id();
+                self.request_map.insert(io_id, (channel, id));
+                self.ready_queue.push_back(msg.frames());
 
                 drop(permit);
             }
@@ -736,14 +774,15 @@ where
 
     /// Clears a potentially finished frame and returns the next frame to send.
     ///
-    /// Returns `None` if no frames are ready to be sent. Note that there may be frames waiting
-    /// that cannot be sent due them being multi-frame messages when there already is a multi-frame
-    /// message in progress, or request limits are being hit.
+    /// Note that there may be frames waiting that cannot be sent due them being multi-frame
+    /// messages when there already is a multi-frame message in progress, or request limits are
+    /// being hit.
+    ///
+    /// The caller needs to ensure that the current frame is empty (i.e. has been sent).
     fn ready_next_frame(&mut self) -> Result<(), LocalProtocolViolation> {
         debug_assert!(self.current_frame.is_none()); // Must be guaranteed by caller.
 
-        // Try to fetch a frame from the ready queue. If there is nothing, we are stuck until the
-        // next time the wait queue is processed or new data arrives.
+        // Try to fetch a frame from the ready queue.
         let (frame, additional_frames) = match self.ready_queue.pop_front() {
             Some(item) => item,
             None => return Ok(()),
@@ -763,9 +802,6 @@ where
                     // Once the scheduled frame is processed, we will finished the multi-frame
                     // transfer, so we can allow for the next multi-frame transfer to be scheduled.
                     self.active_multi_frame[about_to_finish.channel().get() as usize] = None;
-
-                    // There is a chance another multi-frame messages became ready now.
-                    self.dirty_channels.insert(about_to_finish.channel());
                 }
             }
         }
@@ -774,31 +810,27 @@ where
         Ok(())
     }
 
-    /// Process the wait queue of all channels marked dirty, promoting messages that are ready to be
-    /// sent to the ready queue.
-    fn process_dirty_channels(&mut self) -> Result<(), CoreError> {
-        while let Some(channel) = self.dirty_channels.pop_first() {
-            let wait_queue_len = self.wait_queue[channel.get() as usize].len();
+    /// Process the wait queue of a given channel, promoting messages that are ready to be sent.
+    fn process_wait_queue(&mut self, channel: ChannelId) -> Result<(), LocalProtocolViolation> {
+        let mut remaining = self.wait_queue[channel.get() as usize].len();
 
-            // The code below is not as bad it looks complexity wise, anticipating two common cases:
-            //
-            // 1. A multi-frame read has finished, with capacity for requests to spare. Only
-            //    multi-frame requests will be waiting in the wait queue, so we will likely pop the
-            //    first item, only scanning the rest once.
-            // 2. One or more requests finished, so we also have a high chance of picking the first
-            //    few requests out of the queue.
+        while let Some(item) = self.wait_queue[channel.get() as usize].pop_front() {
+            if item_should_wait(&item, &self.juliet, &self.active_multi_frame)?.is_some() {
+                // Put it right back into the queue.
+                self.wait_queue[channel.get() as usize].push_back(item);
+            } else {
+                self.send_to_ready_queue(item)?;
 
-            for _ in 0..(wait_queue_len) {
-                let item = self.wait_queue[channel.get() as usize].pop_front().ok_or(
-                    CoreError::InternalError("did not expect wait_queue to disappear"),
-                )?;
-
-                if item_should_wait(&item, &self.juliet, &self.active_multi_frame).is_some() {
-                    // Put it right back into the queue.
-                    self.wait_queue[channel.get() as usize].push_back(item);
-                } else {
-                    self.send_to_ready_queue(item, true)?;
+                // No need to look further if we have saturated the channel.
+                if !self.juliet.allowed_to_send_request(channel)? {
+                    break;
                 }
+            }
+
+            // Ensure we do not loop endlessly if we cannot find anything.
+            remaining -= 1;
+            if remaining == 0 {
+                break;
             }
         }
 
@@ -806,22 +838,21 @@ where
     }
 }
 
-/// Determines whether an item is ready to be moved from the wait queue from the ready queue.
+/// Determines whether an item is ready to be moved from the wait queue to the ready queue.
+///
+/// Returns `None` if the item does not need to wait. Otherwise, the item's channel ID is returned.
 fn item_should_wait<const N: usize>(
     item: &QueuedItem,
     juliet: &JulietProtocol<N>,
     active_multi_frame: &[Option<Header>; N],
-) -> Option<ChannelId> {
+) -> Result<Option<ChannelId>, LocalProtocolViolation> {
     let (payload, channel) = match item {
         QueuedItem::Request {
             channel, payload, ..
         } => {
             // Check if we cannot schedule due to the message exceeding the request limit.
-            if !juliet
-                .allowed_to_send_request(*channel)
-                .expect("should not be called with invalid channel")
-            {
-                return Some(*channel);
+            if !juliet.allowed_to_send_request(*channel)? {
+                return Ok(Some(*channel));
             }
 
             (payload, channel)
@@ -833,7 +864,7 @@ fn item_should_wait<const N: usize>(
         // Other messages are always ready.
         QueuedItem::RequestCancellation { .. }
         | QueuedItem::ResponseCancellation { .. }
-        | QueuedItem::Error { .. } => return None,
+        | QueuedItem::Error { .. } => return Ok(None),
     };
 
     let active_multi_frame = active_multi_frame[channel.get() as usize];
@@ -843,13 +874,13 @@ fn item_should_wait<const N: usize>(
     if active_multi_frame.is_some() {
         if let Some(payload) = payload {
             if payload_is_multi_frame(juliet.max_frame_size(), payload.len()) {
-                return Some(*channel);
+                return Ok(Some(*channel));
             }
         }
     }
 
     // Otherwise, this should be a legitimate add to the run queue.
-    None
+    Ok(None)
 }
 
 /// A handle to the input queue to the [`IoCore`] that allows sending requests and responses.
@@ -1072,6 +1103,8 @@ impl Handle {
     ///
     /// Enqueuing an error causes the [`IoCore`] to begin shutting down immediately, only making an
     /// effort to finish sending the error before doing so.
+    ///
+    /// If payload exceeds what is possible to send in a single frame, it is truncated.
     pub fn enqueue_error(
         &self,
         channel: ChannelId,
@@ -1112,7 +1145,9 @@ where
     R: AsyncReadExt + Sized + Unpin,
 {
     let extra_required = target.saturating_sub(buf.remaining());
-    buf.reserve(extra_required);
+    // Note: `reserve` is purely an optimization -- `BufMut::remaining_mut(&mut buf)` will always
+    //       return 2**64-1, which is the number `read_buf` looks at for exiting early.
+    buf.reserve(extra_required.min(MAX_ALLOC));
 
     while buf.remaining() < target {
         match reader.read_buf(buf).await {

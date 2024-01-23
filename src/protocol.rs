@@ -22,7 +22,7 @@
 mod multiframe;
 mod outgoing_message;
 
-use std::{collections::HashSet, fmt::Display, num::NonZeroU32};
+use std::{collections::HashSet, fmt::Display};
 
 use bytes::{Buf, Bytes, BytesMut};
 use thiserror::Error;
@@ -35,7 +35,7 @@ use crate::{
     util::{Index, PayloadFormat},
     varint::{decode_varint32, Varint32},
     ChannelConfiguration, ChannelId, Id,
-    Outcome::{self, Fatal, Incomplete, Success},
+    Outcome::{self, Fatal, Success},
 };
 
 /// A channel ID to fill in when the channel is actually unknown or not relevant.
@@ -95,10 +95,17 @@ impl MaxFrameSize {
         self.0 as usize
     }
 
-    /// Returns the maximum frame size without the header size.
+    /// Returns the maximum frame size with the header size subtracted.
     #[inline(always)]
     pub const fn without_header(self) -> usize {
         self.get_usize() - Header::SIZE
+    }
+
+    /// Returns the maximum frame size with the preamble size subtracted, assuming it includes a
+    /// payload length for `payload_len`.
+    #[inline(always)]
+    pub const fn without_preamble(self, payload_len: u32) -> usize {
+        self.without_header() - Varint32::length_of(payload_len)
     }
 }
 
@@ -735,9 +742,9 @@ impl<const N: usize> JulietProtocol<N> {
     /// Any successful frame read will cause `buffer` to be advanced by the length of the frame,
     /// thus eventually freeing the data if not held elsewhere.
     ///
-    /// **Important**: This functions `Err` value is an [`OutgoingMessage`] to be sent to the peer.
-    /// It must be the final message sent and should be sent as soon as possible, with the
-    /// connection being close afterwards.
+    /// **Important**: This function's `Err` value is an [`OutgoingMessage`], to be sent to the
+    /// peer. It must be the final message sent and should be sent as soon as possible, with the
+    /// connection being closed afterwards.
     pub fn process_incoming(
         &mut self,
         buffer: &mut BytesMut,
@@ -746,7 +753,7 @@ impl<const N: usize> JulietProtocol<N> {
         loop {
             // We do not have enough data to extract a header, indicate and return.
             if buffer.len() < Header::SIZE {
-                return Incomplete(NonZeroU32::new((Header::SIZE - buffer.len()) as u32).unwrap());
+                return Outcome::incomplete(Header::SIZE - buffer.len());
             }
 
             let header_raw: [u8; Header::SIZE] = buffer[0..Header::SIZE].try_into().unwrap();
@@ -803,6 +810,7 @@ impl<const N: usize> JulietProtocol<N> {
                     }
                     _ => {
                         log_frame!(header);
+                        buffer.advance(Header::SIZE);
                         return Success(CompletedRead::ErrorReceived { header, data: None });
                     }
                 }
@@ -894,11 +902,8 @@ impl<const N: usize> JulietProtocol<N> {
                     }
                 }
                 Kind::ResponsePl => {
-                    let is_new_response =
-                        channel.current_multiframe_receiver.is_new_transfer(header);
-
                     // Ensure it is not a bogus response.
-                    if is_new_response && !channel.outgoing_requests.contains(&header.id()) {
+                    if !channel.outgoing_requests.contains(&header.id()) {
                         return err_msg(header, ErrorKind::FictitiousRequest);
                     }
 
@@ -911,13 +916,10 @@ impl<const N: usize> JulietProtocol<N> {
                             ErrorKind::ResponseTooLarge
                         ));
 
-                    // If we made it to this point, we have consumed the frame.
-                    if is_new_response && !channel.outgoing_requests.remove(&header.id()) {
-                        return err_msg(header, ErrorKind::FictitiousRequest);
-                    }
-
                     if let Some(payload) = multiframe_outcome {
-                        // Message is complete.
+                        // Message is complete. Remove it from the outgoing requests.
+                        channel.outgoing_requests.remove(&header.id());
+
                         let payload = payload.freeze();
 
                         return Success(CompletedRead::ReceivedResponse {
@@ -1017,8 +1019,7 @@ pub const fn payload_is_multi_frame(max_frame_size: MaxFrameSize, payload_len: u
         "payload cannot exceed `u32::MAX`"
     );
 
-    payload_len as u64 + Header::SIZE as u64 + (Varint32::encode(payload_len as u32)).len() as u64
-        > max_frame_size.get() as u64
+    max_frame_size.without_preamble(payload_len as u32) < payload_len
 }
 
 #[cfg(test)]
@@ -1056,6 +1057,8 @@ mod tests {
         SingleFrame,
         /// A payload that spans more than one frame.
         MultiFrame,
+        /// A payload that spans a large number of frames.
+        LargeMultiFrame,
         /// A payload that exceeds the request size limit.
         TooLarge,
     }
@@ -1067,6 +1070,7 @@ mod tests {
                 VaryingPayload::None,
                 VaryingPayload::SingleFrame,
                 VaryingPayload::MultiFrame,
+                VaryingPayload::LargeMultiFrame,
             ]
             .into_iter()
         }
@@ -1077,6 +1081,7 @@ mod tests {
                 VaryingPayload::None => true,
                 VaryingPayload::SingleFrame => false,
                 VaryingPayload::MultiFrame => false,
+                VaryingPayload::LargeMultiFrame => false,
                 VaryingPayload::TooLarge => false,
             }
         }
@@ -1116,6 +1121,11 @@ mod tests {
             b"large payload large payload large payload large payload large payload large payload";
             const_assert!(LONG_PAYLOAD.len() > TestingSetup::MAX_FRAME_SIZE as usize);
 
+            const VERY_LONG_PAYLOAD: &[u8] =
+            b"very very large payload very large payload very large payload very large payload very large payload very large payload very very large payload very large payload very large payload very large payload very large payload very large payload very very large payload very large payload very large payload very large payload very large payload very large payload very very large payload very large payload very large payload very large payload very large payload very large payload";
+            const_assert!(VERY_LONG_PAYLOAD.len() > TestingSetup::MAX_FRAME_SIZE as usize);
+            const_assert!(VERY_LONG_PAYLOAD.len() <= TestingSetup::MAX_PAYLOAD_SIZE as usize);
+
             const OVERLY_LONG_PAYLOAD: &[u8] = b"abcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefgh";
             const_assert!(OVERLY_LONG_PAYLOAD.len() > TestingSetup::MAX_PAYLOAD_SIZE as usize);
 
@@ -1123,6 +1133,7 @@ mod tests {
                 VaryingPayload::None => None,
                 VaryingPayload::SingleFrame => Some(SHORT_PAYLOAD),
                 VaryingPayload::MultiFrame => Some(LONG_PAYLOAD),
+                VaryingPayload::LargeMultiFrame => Some(VERY_LONG_PAYLOAD),
                 VaryingPayload::TooLarge => Some(OVERLY_LONG_PAYLOAD),
             }
         }
@@ -2508,5 +2519,127 @@ mod tests {
             bobs_channel.current_multiframe_receiver,
             MultiframeReceiver::Ready
         ));
+    }
+
+    #[test]
+    fn two_multi_frame_messages_interleaved_causes_error() {
+        let big_payload_1 = VaryingPayload::MultiFrame;
+        let big_payload_2 = VaryingPayload::MultiFrame;
+
+        let mut env = TestingSetup::new();
+
+        let channel = env.common_channel;
+
+        // Alice sends the first multi-frame request's opening frame.
+        let alices_multiframe_request_1 = env
+            .get_peer_mut(Alice)
+            .create_request(channel, big_payload_1.get())
+            .expect("should be able to create request");
+        assert!(alices_multiframe_request_1.is_multi_frame(env.max_frame_size));
+
+        // Send first frame.
+        let frames = alices_multiframe_request_1.frames();
+        let (frame, _additional_frames) = frames.next_owned(env.max_frame_size);
+        let mut buffer = BytesMut::from(frame.to_bytes().as_ref());
+
+        // The outcome of receiving a single frame should be a begun multi-frame read and 4 bytes
+        // incompletion asking for the next header.
+        let outcome = env.get_peer_mut(Bob).process_incoming(&mut buffer);
+        assert_eq!(outcome, Outcome::incomplete(4));
+
+        // Alice sends the second multi-frame request's opening frame.
+        let alices_multiframe_request_2 = env
+            .get_peer_mut(Alice)
+            .create_request(channel, big_payload_2.get())
+            .expect("should be able to create request");
+        assert!(alices_multiframe_request_2.is_multi_frame(env.max_frame_size));
+
+        // Send second frame.
+        let frames = alices_multiframe_request_2.frames();
+        let (frame, _additional_frames) = frames.next_owned(env.max_frame_size);
+        let mut buffer = BytesMut::from(frame.to_bytes().as_ref());
+
+        // Now we expect an error.
+        let outcome = env.get_peer_mut(Bob).process_incoming(&mut buffer);
+        assert_eq!(
+            outcome,
+            Outcome::Fatal(OutgoingMessage::new(
+                Header::new_error(ErrorKind::InProgress, channel, Id::new(2)),
+                None,
+            ))
+        );
+    }
+
+    #[test]
+    fn multi_frame_followed_by_single_frame_request_is_acceptable() {
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .try_init()
+            .ok(); // If setting up logging fails, another testing thread already initialized it.
+
+        let payload_mf = VaryingPayload::MultiFrame;
+        let payload_sf = VaryingPayload::SingleFrame;
+
+        let mut env = TestingSetup::new();
+
+        let channel = env.common_channel;
+
+        // Alice sends the first multi-frame request's opening frame.
+        let alices_multiframe_request = env
+            .get_peer_mut(Alice)
+            .create_request(channel, payload_mf.get())
+            .expect("should be able to create request");
+        assert!(alices_multiframe_request.is_multi_frame(env.max_frame_size));
+
+        // Send first frame.
+        let frames = alices_multiframe_request.frames();
+        let (frame, _additional_frames) = frames.next_owned(env.max_frame_size);
+        let mut buffer = BytesMut::from(frame.to_bytes().as_ref());
+
+        // The outcome of receiving a single frame should be a begun multi-frame read and 4 bytes
+        // incompletion asking for the next header.
+        let outcome = env.get_peer_mut(Bob).process_incoming(&mut buffer);
+        assert_eq!(outcome, Outcome::incomplete(4));
+
+        // Alice sends the second multi-frame request's opening frame.
+        let alices_single_frame_request = env
+            .get_peer_mut(Alice)
+            .create_request(channel, payload_sf.get())
+            .expect("should be able to create request");
+        assert!(!alices_single_frame_request.is_multi_frame(env.max_frame_size));
+
+        // Send second frame.
+        let frames = alices_single_frame_request.frames();
+        let (frame, _additional_frames) = frames.next_owned(env.max_frame_size);
+        let mut buffer = BytesMut::from(frame.to_bytes().as_ref());
+
+        // This should be allowed, due to interleaving.
+        let outcome = env.get_peer_mut(Bob).process_incoming(&mut buffer);
+        assert_eq!(
+            outcome,
+            Outcome::Success(CompletedRead::NewRequest {
+                channel,
+                id: Id::new(2),
+                payload: Some(payload_sf.get().unwrap())
+            })
+        );
+    }
+
+    #[test]
+    fn can_send_back_to_back_multi_frame_requests() {
+        let big_payload_1 = VaryingPayload::LargeMultiFrame;
+        let big_payload_2 = VaryingPayload::LargeMultiFrame;
+
+        let mut env = TestingSetup::new();
+
+        let resp1 = env
+            .create_and_send_request(Alice, big_payload_1.get())
+            .expect("should be able to send multiframe request");
+        let resp2 = env
+            .create_and_send_request(Alice, big_payload_2.get())
+            .expect("should be able to send multiframe request");
+
+        assert!(matches!(resp1, CompletedRead::NewRequest { id, .. } if id == Id(1)));
+        assert!(matches!(resp2, CompletedRead::NewRequest { id, .. } if id == Id(2)));
     }
 }

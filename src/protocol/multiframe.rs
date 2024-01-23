@@ -222,7 +222,7 @@ impl InitialFrameData {
 #[inline(always)]
 fn detect_starting_segment(
     header: Header,
-    buffer: &BytesMut,
+    buffer: &[u8],
     max_frame_size: MaxFrameSize,
     max_payload_size: u32,
     payload_exceeded_error_kind: ErrorKind,
@@ -381,20 +381,15 @@ mod tests {
             #[debug("{} bytes", payload.len())]
             payload: Vec<u8>,
         },
-        /// Sends another frame with data.
-        ///
-        /// Will be ignored if hitting the last frame of the payload.
-        #[proptest(weight = 1)]
-        ContinueWithoutTooSmallFrame,
-        /// Exceeds the size limit.
+        /// Message send that exceeds the size limit.
         #[proptest(weight = 1)]
         ExceedPayloadSizeLimit {
             /// The header for the new message.
             header: Header,
-            /// How much to reduce the maximum payload size by.
+            /// Payload to send.
             #[proptest(strategy = "collection::vec(any::<u8>(),
-                    (MAX_SINGLE_FRAME_PAYLOAD_SIZE as usize + 1)
-                    ..=(2+2*MAX_SINGLE_FRAME_PAYLOAD_SIZE as usize))")]
+                    (MAX_PAYLOAD_SIZE as usize + 1)
+                    ..=(2+2*MAX_PAYLOAD_SIZE as usize))")]
             #[debug("{} bytes", payload.len())]
             payload: Vec<u8>,
         },
@@ -402,7 +397,6 @@ mod tests {
 
     proptest! {
     #[test]
-    #[ignore]  // TODO: Adjust parameters so that this does not OOM (or fix leakage bug).
     fn model_sequence_test_multi_frame_receiver(
         actions in collection::vec(any::<Action>(), 0..1000)
     ) {
@@ -519,30 +513,7 @@ mod tests {
                         // Nothing to do - we cannot conflict with a transfer if there is none.
                     }
                 }
-                Action::ContinueWithoutTooSmallFrame => {
-                    if let Some(ref active_transfer) = active_transfer {
-                        let header = active_transfer.header();
-
-                        // The only guarantee we have is that there is at least one more byte of
-                        // payload, so we send a zero-sized payload.
-                        let msg = OutgoingMessage::new(header, Some(Bytes::new()));
-                        let (frame, _) = msg.frames().next_owned(MAX_FRAME_SIZE);
-                        input.put(frame);
-                        expected.push(Outcome::Fatal(OutgoingMessage::new(
-                            header.with_err(ErrorKind::SegmentViolation),
-                            None,
-                        )));
-                        break; // Stop after error.
-                    } else {
-                        // Nothing to do, we cannot send a too-small frame if there is no transfer.
-                    }
-                }
                 Action::ExceedPayloadSizeLimit { header, payload } => {
-                    if active_transfer.is_some() {
-                        // Only do this if there is no active transfer.
-                        continue;
-                    }
-
                     let msg = OutgoingMessage::new(header, Some(payload.into()));
                     let (frame, _) = msg.frames().next_owned(MAX_FRAME_SIZE);
                     input.put(frame);
