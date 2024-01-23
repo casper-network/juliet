@@ -56,6 +56,9 @@ use crate::{
     ChannelId, Id, Outcome,
 };
 
+/// Maximum number of bytes to pre-allocate in buffers.
+const MAX_ALLOC: usize = 32 * 1024; // 32 KiB
+
 /// An item in the outgoing queue.
 ///
 /// Requests are not transformed into messages in the queue to conserve limited request ID space.
@@ -1142,7 +1145,9 @@ where
     R: AsyncReadExt + Sized + Unpin,
 {
     let extra_required = target.saturating_sub(buf.remaining());
-    buf.reserve(extra_required);
+    // Note: `reserve` is purely an optimization -- `BufMut::remaining_mut(&mut buf)` will always
+    //       return 2**64-1, which is the number `read_buf` looks at for exiting early.
+    buf.reserve(extra_required.min(MAX_ALLOC));
 
     while buf.remaining() < target {
         match reader.read_buf(buf).await {
