@@ -847,17 +847,17 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BinaryHeap, sync::Arc, time::Duration};
+    use std::{collections::BinaryHeap, iter, sync::Arc, time::Duration};
 
     use bytes::Bytes;
     use futures::FutureExt;
     use tokio::io::{DuplexStream, ReadHalf, WriteHalf};
-    use tracing::{span, Instrument, Level};
+    use tracing::{error_span, info, span, Instrument, Level};
 
     use crate::{
-        io::IoCoreBuilder,
+        io::{CoreError, IoCoreBuilder},
         protocol::ProtocolBuilder,
-        rpc::{RequestError, RpcBuilder},
+        rpc::{RequestError, RpcBuilder, RpcServerError},
         ChannelConfiguration, ChannelId,
     };
 
@@ -1167,5 +1167,352 @@ mod tests {
         let mut empty_heap = BinaryHeap::<u32>::new();
 
         assert!(drain_heap_while(&mut empty_heap, |_| true).next().is_none());
+    }
+
+    /// Parameters for a "large volume" test.
+    #[derive(Copy, Clone, Debug)]
+
+    struct LargeVolumeTestSpec<const N: usize> {
+        /// Maximum frame size to use.
+        max_frame_size: u32,
+        /// Per-channel in-flight request limit.
+        ///
+        /// All channels use the same in-flight limit.
+        request_limit: u16,
+        /// The "step size" of a payload.
+        ///
+        /// Any payload from Bob to Alice will have a size that is a multiple of
+        /// `payload_step_size`.
+        payload_step_size: u32,
+        /// Maximum multiplier for the payload.
+        ///
+        /// A random multiplier is chosen for payloads up to `payload_max_multiplier` for those sent
+        /// from Bob to Alice.
+        payload_max_multiplier: u32,
+        /// How many bytes to buffer in the internal in-memory buffer of the transport.
+        pipe_buffer: usize,
+        /// How many bytes of payload data to send before ending the test.
+        ///
+        /// Measures the amount of data Alice receives from Bob.
+        min_send_bytes: usize,
+        /// Timeout for a single message.
+        timeout: Duration,
+    }
+
+    impl<const N: usize> Default for LargeVolumeTestSpec<N> {
+        fn default() -> Self {
+            Self {
+                max_frame_size: 37,
+                request_limit: 3,
+                payload_step_size: 20,
+                payload_max_multiplier: 10,
+                pipe_buffer: 80,
+                min_send_bytes: 100 * 1024 * 1024, // 100 MiB
+                timeout: Duration::from_millis(250),
+            }
+        }
+    }
+
+    impl<const N: usize> LargeVolumeTestSpec<N> {
+        fn max_payload_size(&self) -> u32 {
+            self.payload_step_size * self.payload_max_multiplier
+        }
+
+        fn default_buffer_size(&self) -> usize {
+            self.request_limit as usize * 2
+        }
+
+        /// Generates a "random" payload size.
+        ///
+        /// `count` is used as a seed, using very weak randomness.
+        fn gen_payload_size(&self, count: usize) -> usize {
+            let multiplier = ((count * 239) % self.payload_max_multiplier as usize) + 1;
+            self.payload_step_size as usize * multiplier
+        }
+
+        /// Setup function for RPC testing.
+        ///
+        /// Creates two "nodes" linked using an in-memory transport, hopefully with deterministic
+        /// behavior.
+        fn mk_rpc(&self) -> (CompleteSetup<N>, CompleteSetup<N>) {
+            let channel_cfg = ChannelConfiguration::new()
+                .with_max_request_payload_size(self.max_payload_size())
+                .with_max_response_payload_size(self.max_payload_size())
+                .with_request_limit(self.request_limit);
+
+            let protocol_builder = ProtocolBuilder::with_default_channel_config(channel_cfg)
+                .max_frame_size(self.max_frame_size);
+            let rpc_builder: RpcBuilder<N> =
+                RpcBuilder::new(IoCoreBuilder::with_default_buffer_size(
+                    protocol_builder,
+                    self.default_buffer_size(),
+                ))
+                .with_bubble_timeouts(true)
+                .with_default_timeout(self.timeout);
+
+            let (alice_stream, bob_stream) = tokio::io::duplex(self.pipe_buffer);
+
+            let alice = CompleteSetup::new(&rpc_builder, alice_stream);
+            let bob = CompleteSetup::new(&rpc_builder, bob_stream);
+
+            (alice, bob)
+        }
+    }
+
+    struct CompleteSetup<const N: usize> {
+        client: JulietRpcClient<N>,
+        server: JulietRpcServer<N, ReadHalf<DuplexStream>, WriteHalf<DuplexStream>>,
+    }
+
+    impl<const N: usize> CompleteSetup<N> {
+        fn new(builder: &RpcBuilder<N>, duplex: DuplexStream) -> Self {
+            let (reader, writer) = tokio::io::split(duplex);
+            let (client, server) = builder.build(reader, writer);
+            CompleteSetup { client, server }
+        }
+    }
+
+    #[tokio::test]
+    async fn large_volume_setup_smoke_test() {
+        let (mut alice, mut bob) = LargeVolumeTestSpec::<4>::default().mk_rpc();
+
+        tokio::spawn(async move {
+            while let Some(request) = alice
+                .server
+                .next_request()
+                .await
+                .expect("next request failed")
+            {
+                // Simply echo back the payload.
+                let pl = request.payload().clone();
+                request.respond(pl);
+            }
+        });
+
+        tokio::spawn(async move { bob.server.next_request().await });
+
+        for i in 0i32..10 {
+            let num: Box<[u8]> = i.to_be_bytes().into();
+            let pl = Bytes::from(num);
+            let handle = bob
+                .client
+                .create_request(ChannelId::new(2))
+                .with_payload(pl.clone())
+                .queue_for_sending()
+                .await;
+
+            let resp = handle
+                .wait_for_response()
+                .await
+                .expect("should get response")
+                .expect("should have payload");
+
+            assert_eq!(resp, pl);
+        }
+    }
+
+    #[tokio::test]
+    async fn run_large_volume_test_single_channel_single_request() {
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .try_init()
+            .ok();
+
+        let spec = LargeVolumeTestSpec {
+            request_limit: 1,
+            max_frame_size: 17,
+            // 10 Bytes requests means they all fit in one frame.
+            payload_max_multiplier: 1,
+            payload_step_size: 10,
+            ..Default::default()
+        };
+
+        large_volume_test::<1>(spec).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn run_large_volume_test_with_default_values_10_channels() {
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .try_init()
+            .ok();
+
+        large_volume_test::<10>(Default::default()).await;
+    }
+
+    async fn large_volume_test<const N: usize>(spec: LargeVolumeTestSpec<N>) {
+        // Our setup is as follows:
+        //
+        // 1. All messages are `ACK`'d with empty responses.
+        // 2. Alice will send a constant stream of small messages to Bob.
+        // 3. Bob will send a larger message every time he receives a small message from Alice, on
+        //    the same channel.
+
+        let channel_ids: Vec<ChannelId> = (0..N).map(|id| ChannelId::new(id as u8)).collect();
+
+        let (mut alice, mut bob) = LargeVolumeTestSpec::<N>::default().mk_rpc();
+
+        // Alice server. Will close the connection after enough bytes have been sent.
+        let mut remaining = spec.min_send_bytes;
+        let alice_server = tokio::spawn(
+            async move {
+                while let Some(request) = alice
+                    .server
+                    .next_request()
+                    .await
+                    .expect("next request failed")
+                {
+                    let payload_size = request
+                        .payload()
+                        .as_ref()
+                        .expect("should have payload in bobs request")
+                        .len();
+                    // Just discard the message payload, but acknowledge receiving it.
+                    request.respond(None);
+
+                    remaining = remaining.saturating_sub(payload_size);
+                    if remaining == 0 {
+                        // We've reached the volume we were looking for, end test.
+                        break;
+                    }
+                }
+
+                info!("exiting");
+            }
+            .instrument(error_span!("alice_server")),
+        );
+
+        let small_payload: Bytes = iter::repeat(0xFF)
+            .take(spec.max_frame_size as usize / 2)
+            .collect::<Vec<u8>>()
+            .into();
+
+        // Alice client. Will shut down once bob closes the connection.
+        let alice_client = tokio::spawn(
+            async move {
+                let mut next_channel = channel_ids.iter().cloned().cycle();
+
+                let mut alice_counter = 0;
+                loop {
+                    let small_request = alice
+                        .client
+                        .create_request(next_channel.next().unwrap())
+                        .with_payload(small_payload.clone())
+                        .queue_for_sending()
+                        .await;
+                    info!(alice_counter, "alice enqueued request");
+                    alice_counter += 1;
+
+                    match small_request.try_get_response() {
+                        Ok(Ok(_)) => {
+                            // A surprise to be sure, but a welcome one (very fast answer).
+                        }
+                        Ok(Err(err)) => match err {
+                            RequestError::RemoteClosed(_) | RequestError::Shutdown => break,
+                            RequestError::TimedOut
+                            | RequestError::TimeoutOverflow(_)
+                            | RequestError::RemoteCancelled
+                            | RequestError::Cancelled
+                            | RequestError::Error(_) => {
+                                panic!("{}", err);
+                            }
+                        },
+
+                        Err(guard) => {
+                            // Not ready, but we are not going to wait.
+                            tokio::spawn(async move {
+                                if let Err(err) = guard.wait_for_response().await {
+                                    match err {
+                                        RequestError::RemoteClosed(_) | RequestError::Shutdown => {}
+                                        err => panic!("{}", err),
+                                    }
+                                }
+                            });
+                        }
+                    }
+                }
+
+                info!("exiting");
+            }
+            .instrument(error_span!("alice_client")),
+        );
+
+        // Bob server.
+        let bob_server = tokio::spawn(
+            async move {
+                let mut bob_counter = 0;
+                while let Some(request) = bob
+                    .server
+                    .next_request()
+                    .await
+                    .or_else(|err| match err {
+                        RpcServerError::CoreError(ref core_err) => match core_err {
+                            CoreError::ReadFailed(_)
+                            | CoreError::WriteFailed(_)
+                            | CoreError::ErrorWriteTimeout => Ok(None), // Ignore these IO errors.
+                            _ => Err(err),
+                        },
+                        other => Err(other),
+                    })
+                    .expect("next request failed")
+                {
+                    let channel = request.channel();
+                    // Just discard the message payload, but acknowledge receiving it.
+                    request.respond(None);
+
+                    let payload_size = spec.gen_payload_size(bob_counter);
+                    let large_payload: Bytes = iter::repeat(0xFF)
+                        .take(payload_size)
+                        .collect::<Vec<u8>>()
+                        .into();
+
+                    // Send another request back.
+                    let bobs_request: RequestGuard = bob
+                        .client
+                        .create_request(channel)
+                        .with_payload(large_payload.clone())
+                        .queue_for_sending()
+                        .await;
+
+                    info!(bob_counter, "bob enqueued request");
+                    bob_counter += 1;
+
+                    match bobs_request.try_get_response() {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(err)) => match err {
+                            RequestError::RemoteClosed(_) | RequestError::Shutdown => break,
+                            RequestError::TimedOut
+                            | RequestError::TimeoutOverflow(_)
+                            | RequestError::RemoteCancelled
+                            | RequestError::Cancelled
+                            | RequestError::Error(_) => {
+                                panic!("{}", err);
+                            }
+                        },
+
+                        Err(guard) => {
+                            // Do not wait, instead attempt to retrieve next request.
+                            tokio::spawn(async move {
+                                if let Err(err) = guard.wait_for_response().await {
+                                    match err {
+                                        RequestError::RemoteClosed(_) | RequestError::Shutdown => {}
+                                        err => panic!("{}", err),
+                                    }
+                                }
+                            });
+                        }
+                    }
+                }
+
+                info!("exiting");
+            }
+            .instrument(error_span!("bob_server")),
+        );
+
+        alice_server.await.expect("failed to join alice server");
+        alice_client.await.expect("failed to join alice client");
+        bob_server.await.expect("failed to join bob server");
+
+        info!("all joined");
     }
 }

@@ -142,6 +142,18 @@ impl OutgoingMessage {
         let mut everything = self.iter_bytes(max_frame_size);
         everything.copy_to_bytes(everything.remaining())
     }
+
+    /// Truncates the message payload so that it fits into the first frame.
+    #[inline]
+    pub fn truncate_to_single_frame(&mut self, max_frame_size: MaxFrameSize) {
+        if self.is_multi_frame(max_frame_size) {
+            // Note: There are some edge cases where we might miss one byte due to the `Varint32`
+            //       shrinking, but we're accepting that.
+            if let Some(ref mut payload) = self.payload {
+                payload.truncate(max_frame_size.without_preamble(payload.len() as u32));
+            }
+        }
+    }
 }
 
 /// Combination of header and potential message payload length.

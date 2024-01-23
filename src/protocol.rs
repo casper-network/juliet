@@ -95,10 +95,17 @@ impl MaxFrameSize {
         self.0 as usize
     }
 
-    /// Returns the maximum frame size without the header size.
+    /// Returns the maximum frame size with the header size subtracted.
     #[inline(always)]
     pub const fn without_header(self) -> usize {
         self.get_usize() - Header::SIZE
+    }
+
+    /// Returns the maximum frame size with the preamble size subtracted, assuming it includes a
+    /// payload length for `payload_len`.
+    #[inline(always)]
+    pub const fn without_preamble(self, payload_len: u32) -> usize {
+        self.without_header() - Varint32::length_of(payload_len)
     }
 }
 
@@ -1012,8 +1019,7 @@ pub const fn payload_is_multi_frame(max_frame_size: MaxFrameSize, payload_len: u
         "payload cannot exceed `u32::MAX`"
     );
 
-    payload_len as u64 + Header::SIZE as u64 + (Varint32::encode(payload_len as u32)).len() as u64
-        > max_frame_size.get() as u64
+    max_frame_size.without_preamble(payload_len as u32) < payload_len
 }
 
 #[cfg(test)]
@@ -1051,6 +1057,8 @@ mod tests {
         SingleFrame,
         /// A payload that spans more than one frame.
         MultiFrame,
+        /// A payload that spans a large number of frames.
+        LargeMultiFrame,
         /// A payload that exceeds the request size limit.
         TooLarge,
     }
@@ -1062,6 +1070,7 @@ mod tests {
                 VaryingPayload::None,
                 VaryingPayload::SingleFrame,
                 VaryingPayload::MultiFrame,
+                VaryingPayload::LargeMultiFrame,
             ]
             .into_iter()
         }
@@ -1072,6 +1081,7 @@ mod tests {
                 VaryingPayload::None => true,
                 VaryingPayload::SingleFrame => false,
                 VaryingPayload::MultiFrame => false,
+                VaryingPayload::LargeMultiFrame => false,
                 VaryingPayload::TooLarge => false,
             }
         }
@@ -1111,6 +1121,11 @@ mod tests {
             b"large payload large payload large payload large payload large payload large payload";
             const_assert!(LONG_PAYLOAD.len() > TestingSetup::MAX_FRAME_SIZE as usize);
 
+            const VERY_LONG_PAYLOAD: &[u8] =
+            b"very very large payload very large payload very large payload very large payload very large payload very large payload very very large payload very large payload very large payload very large payload very large payload very large payload very very large payload very large payload very large payload very large payload very large payload very large payload very very large payload very large payload very large payload very large payload very large payload very large payload";
+            const_assert!(VERY_LONG_PAYLOAD.len() > TestingSetup::MAX_FRAME_SIZE as usize);
+            const_assert!(VERY_LONG_PAYLOAD.len() <= TestingSetup::MAX_PAYLOAD_SIZE as usize);
+
             const OVERLY_LONG_PAYLOAD: &[u8] = b"abcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefgh";
             const_assert!(OVERLY_LONG_PAYLOAD.len() > TestingSetup::MAX_PAYLOAD_SIZE as usize);
 
@@ -1118,6 +1133,7 @@ mod tests {
                 VaryingPayload::None => None,
                 VaryingPayload::SingleFrame => Some(SHORT_PAYLOAD),
                 VaryingPayload::MultiFrame => Some(LONG_PAYLOAD),
+                VaryingPayload::LargeMultiFrame => Some(VERY_LONG_PAYLOAD),
                 VaryingPayload::TooLarge => Some(OVERLY_LONG_PAYLOAD),
             }
         }
@@ -2607,5 +2623,23 @@ mod tests {
                 payload: Some(payload_sf.get().unwrap())
             })
         );
+    }
+
+    #[test]
+    fn can_send_back_to_back_multi_frame_requests() {
+        let big_payload_1 = VaryingPayload::LargeMultiFrame;
+        let big_payload_2 = VaryingPayload::LargeMultiFrame;
+
+        let mut env = TestingSetup::new();
+
+        let resp1 = env
+            .create_and_send_request(Alice, big_payload_1.get())
+            .expect("should be able to send multiframe request");
+        let resp2 = env
+            .create_and_send_request(Alice, big_payload_2.get())
+            .expect("should be able to send multiframe request");
+
+        assert!(matches!(resp1, CompletedRead::NewRequest { id, .. } if id == Id(1)));
+        assert!(matches!(resp2, CompletedRead::NewRequest { id, .. } if id == Id(2)));
     }
 }
