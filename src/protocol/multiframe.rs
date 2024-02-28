@@ -42,6 +42,41 @@ pub(super) enum MultiframeReceiver {
     },
 }
 
+/// The outcome of a multiframe acceptance.
+#[derive(Debug)]
+pub(crate) enum CompletedFrame {
+    /// A new multi-frame transfer was started.
+    NewMultiFrame,
+    /// The frame was consumed, but only contributed to an incomplete multi-frame transfer.
+    IntermediateMultiFrame,
+    /// A self-contained frame as encountered.
+    SingleFrame(BytesMut),
+    /// A multi-frame transfer was finished.
+    CompletedMultiFrame(BytesMut),
+}
+
+impl CompletedFrame {
+    /// Returns whether or not the segment was part of a new message.
+    pub(crate) fn was_new(&self) -> bool {
+        match self {
+            CompletedFrame::NewMultiFrame => true,
+            CompletedFrame::IntermediateMultiFrame => false,
+            CompletedFrame::SingleFrame(_) => true,
+            CompletedFrame::CompletedMultiFrame(_) => false,
+        }
+    }
+
+    /// Returns the completed payload, if any.
+    pub(crate) fn into_completed_payload(self) -> Option<BytesMut> {
+        match self {
+            CompletedFrame::NewMultiFrame => None,
+            CompletedFrame::IntermediateMultiFrame => None,
+            CompletedFrame::SingleFrame(payload) => Some(payload),
+            CompletedFrame::CompletedMultiFrame(payload) => Some(payload),
+        }
+    }
+}
+
 impl MultiframeReceiver {
     /// Attempt to process a single multi-frame message frame.
     ///
@@ -67,7 +102,7 @@ impl MultiframeReceiver {
         max_frame_size: MaxFrameSize,
         max_payload_size: u32,
         payload_exceeded_error_kind: ErrorKind,
-    ) -> Outcome<Option<BytesMut>, OutgoingMessage> {
+    ) -> Outcome<CompletedFrame, OutgoingMessage> {
         // TODO: Use tracing to log frames here.
 
         match self {
@@ -89,7 +124,7 @@ impl MultiframeReceiver {
 
                 if frame_data.is_complete() {
                     // No need to alter the state, we stay `Ready`.
-                    Success(Some(segment))
+                    Success(CompletedFrame::SingleFrame(segment))
                 } else {
                     // Length exceeds the frame boundary, split to maximum and store that.
                     *self = MultiframeReceiver::InProgress {
@@ -99,7 +134,7 @@ impl MultiframeReceiver {
                     };
 
                     // We have successfully consumed a frame, but are not finished yet.
-                    Success(None)
+                    Success(CompletedFrame::NewMultiFrame)
                 }
             }
             MultiframeReceiver::InProgress {
@@ -122,7 +157,7 @@ impl MultiframeReceiver {
                         // An interspersed complete frame is fine, consume and return it.
                         buffer.advance(frame_data.preamble_len);
                         let segment = buffer.split_to(frame_data.segment_len);
-                        return Success(Some(segment));
+                        return Success(CompletedFrame::SingleFrame(segment));
                     } else {
                         // Otherwise, `InProgress`, we cannot start a second multiframe transfer.
                         return err_msg(header, ErrorKind::InProgress);
@@ -138,22 +173,11 @@ impl MultiframeReceiver {
                     let finished_payload = mem::take(payload);
                     *self = MultiframeReceiver::Ready;
 
-                    Success(Some(finished_payload))
+                    Success(CompletedFrame::CompletedMultiFrame(finished_payload))
                 } else {
-                    Success(None)
+                    Success(CompletedFrame::IntermediateMultiFrame)
                 }
             }
-        }
-    }
-
-    /// Determines whether given `new_header` would be a new transfer if accepted.
-    ///
-    /// If `false`, `new_header` would indicate a continuation of an already in-progress transfer.
-    #[inline]
-    pub(super) fn is_new_transfer(&self, new_header: Header) -> bool {
-        match self {
-            MultiframeReceiver::Ready => true,
-            MultiframeReceiver::InProgress { header, .. } => *header != new_header,
         }
     }
 
@@ -266,7 +290,7 @@ mod tests {
 
     use crate::{
         header::{ErrorKind, Header, Kind},
-        protocol::{FrameIter, MaxFrameSize, OutgoingMessage},
+        protocol::{multiframe::CompletedFrame, FrameIter, MaxFrameSize, OutgoingMessage},
         ChannelId, Id, Outcome,
     };
 
@@ -302,13 +326,16 @@ mod tests {
 
             buffer.put(frame);
 
-            match receiver.accept(
-                header,
-                &mut buffer,
-                MAX_FRAME_SIZE,
-                MAX_PAYLOAD_SIZE,
-                ErrorKind::RequestLimitExceeded,
-            ) {
+            match receiver
+                .accept(
+                    header,
+                    &mut buffer,
+                    MAX_FRAME_SIZE,
+                    MAX_PAYLOAD_SIZE,
+                    ErrorKind::RequestLimitExceeded,
+                )
+                .map(CompletedFrame::into_completed_payload)
+            {
                 Outcome::Incomplete(n) => {
                     assert_eq!(n.get(), 4, "expected multi-frame to ask for header next");
                 }
@@ -563,7 +590,7 @@ mod tests {
                 MAX_PAYLOAD_SIZE,
                 ErrorKind::RequestTooLarge,
             );
-            actual.push(outcome);
+            actual.push(outcome.map(CompletedFrame::into_completed_payload));
 
             // On error, we exit.
             if matches!(actual.last().unwrap(), Outcome::Fatal(_)) {

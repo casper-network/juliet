@@ -27,7 +27,7 @@ use std::{collections::HashSet, fmt::Display};
 use bytes::{Buf, Bytes, BytesMut};
 use thiserror::Error;
 
-use self::multiframe::MultiframeReceiver;
+use self::multiframe::{CompletedFrame, MultiframeReceiver};
 pub use self::outgoing_message::{FrameIter, OutgoingFrame, OutgoingMessage};
 use crate::{
     header::{self, ErrorKind, Header, Kind},
@@ -859,11 +859,7 @@ impl<const N: usize> JulietProtocol<N> {
                     }
                 }
                 Kind::RequestPl => {
-                    // Make a note whether or not we are continuing an existing request.
-                    let is_new_request =
-                        channel.current_multiframe_receiver.is_new_transfer(header);
-
-                    let multiframe_outcome: Option<BytesMut> =
+                    let completed_frame: CompletedFrame =
                         try_outcome!(channel.current_multiframe_receiver.accept(
                             header,
                             buffer,
@@ -873,8 +869,7 @@ impl<const N: usize> JulietProtocol<N> {
                         ));
 
                     // If we made it to this point, we have consumed the frame. Record it.
-
-                    if is_new_request {
+                    if completed_frame.was_new() {
                         // Requests must be eagerly (first frame) rejected if exceeding the limit.
                         if channel.is_at_max_incoming_requests() {
                             return err_msg(header, ErrorKind::RequestLimitExceeded);
@@ -887,8 +882,8 @@ impl<const N: usize> JulietProtocol<N> {
                         channel.increment_cancellation_allowance();
                     }
 
-                    if let Some(payload) = multiframe_outcome {
-                        // Message is complete.
+                    // If we completed the message, return it.
+                    if let Some(payload) = completed_frame.into_completed_payload() {
                         let payload = payload.freeze();
 
                         return Success(CompletedRead::NewRequest {
@@ -896,9 +891,6 @@ impl<const N: usize> JulietProtocol<N> {
                             id: header.id(),
                             payload: Some(payload),
                         });
-                    } else {
-                        // We need more frames to complete the payload. Do nothing and attempt
-                        // to read the next frame.
                     }
                 }
                 Kind::ResponsePl => {
@@ -914,7 +906,8 @@ impl<const N: usize> JulietProtocol<N> {
                             self.max_frame_size,
                             channel.config.max_response_payload_size,
                             ErrorKind::ResponseTooLarge
-                        ));
+                        ))
+                        .into_completed_payload();
 
                     if let Some(payload) = multiframe_outcome {
                         // Message is complete. Remove it from the outgoing requests.
