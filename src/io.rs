@@ -793,7 +793,7 @@ where
 
         // If there are more frames after this one, schedule the remainder.
         if let Some(next_frame_iter) = additional_frames {
-            self.ready_queue.push_front(next_frame_iter);
+            self.ready_queue.push_back(next_frame_iter);
         } else {
             // No additional frames. Check if sending the next frame finishes a multi-frame message.
             let about_to_finish = frame.header();
