@@ -1565,12 +1565,13 @@ mod tests {
         });
 
         // Preload alice's queue with requests.
-        let data: Vec<u8> = iter::repeat(0xFF).take(PAYLOAD_SIZE).collect();
-        let payload = Bytes::from(data);
+        let mut payloads = vec![];
 
         let mut guards = Vec::new();
 
-        for idx in 0..NUM_REQUESTS {
+        for idx in 0..NUM_REQUESTS as usize {
+            let payload = Bytes::from_iter((idx..PAYLOAD_SIZE + (idx * 2)).map(|val| val as u8));
+            payloads.push(payload.clone());
             let guard = alice
                 .client
                 .create_request(ChannelId::new(0))
@@ -1582,26 +1583,24 @@ mod tests {
         }
 
         let bob_join_handle = tokio::spawn(async move {
-            while let Some(incoming_request) = bob
-                .server
-                .next_request()
-                .await
-                .expect("bob should never error")
-            {
+            for expected_payload in payloads {
+                let incoming_request = bob
+                    .server
+                    .next_request()
+                    .await
+                    .expect("bob should never error")
+                    .expect("bob should never get None");
                 eprintln!("bob received: {}", incoming_request);
+                assert_eq!(incoming_request.payload, Some(expected_payload));
                 incoming_request.respond(None);
             }
-
             eprintln!("bob quit quietly");
         });
 
         // Both background tasks are running, wait for requests to finish.
         for (idx, guard) in guards.into_iter().enumerate() {
-            guard
-                .wait_for_response()
-                .await
-                .expect("failed to receive response");
-            eprintln!("guard {} done", idx);
+            let resp = guard.wait_for_response().await;
+            eprintln!("guard {idx}: {resp:?}");
         }
 
         // Join both server tasks to ensure there were no panics.

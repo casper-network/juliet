@@ -2384,9 +2384,9 @@ mod tests {
             outcome,
             CompletedRead::ReceivedResponse {
                 channel,
-                /// The ID of the request received.
+                // The ID of the request received.
                 id,
-                /// The response payload.
+                // The response payload.
                 payload: None,
             }
         );

@@ -728,6 +728,9 @@ where
                 let msg = self.juliet.create_request(channel, payload)?;
                 let id = msg.header().id();
                 self.request_map.insert(io_id, (channel, id));
+                if msg.is_multi_frame(self.juliet.max_frame_size()) {
+                    self.active_multi_frame[channel.get() as usize] = Some(msg.header());
+                }
                 self.ready_queue.push_back(msg.frames());
 
                 drop(permit);
@@ -751,6 +754,9 @@ where
                 payload,
             } => {
                 if let Some(msg) = self.juliet.create_response(channel, id, payload)? {
+                    if msg.is_multi_frame(self.juliet.max_frame_size()) {
+                        self.active_multi_frame[channel.get() as usize] = Some(msg.header());
+                    }
                     self.ready_queue.push_back(msg.frames())
                 }
             }
