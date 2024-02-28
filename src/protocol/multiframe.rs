@@ -129,22 +129,18 @@ impl MultiframeReceiver {
                     }
                 }
 
-                // Determine whether we expect an intermediate or end segment.
-                let bytes_remaining = *total_payload_size as usize - payload.remaining();
-                let max_data_in_frame = max_frame_size.without_header();
-
-                if bytes_remaining > max_data_in_frame {
-                    try_outcome!(extract_segment(buffer, payload, max_data_in_frame));
-
-                    // We're done with this frame (but not the payload).
-                    Success(None)
-                } else {
-                    try_outcome!(extract_segment(buffer, payload, bytes_remaining));
-
+                if try_outcome!(extract_segment(
+                    buffer,
+                    payload,
+                    *total_payload_size as usize,
+                    max_frame_size,
+                )) {
                     let finished_payload = mem::take(payload);
                     *self = MultiframeReceiver::Ready;
 
                     Success(Some(finished_payload))
+                } else {
+                    Success(None)
                 }
             }
         }
@@ -173,12 +169,19 @@ impl MultiframeReceiver {
 
 /// Given an incoming data buffer, transfers data from incoming to the payload if a complete
 /// intermediate or end frame is found.
+///
+/// Returns whether the message is complete after the frame.
 #[inline(always)]
 fn extract_segment(
     incoming: &mut BytesMut,
     stored_payload: &mut BytesMut,
-    segment_size: usize,
-) -> Outcome<(), OutgoingMessage> {
+    total_payload_size: usize,
+    max_frame_size: MaxFrameSize,
+) -> Outcome<bool, OutgoingMessage> {
+    // Determine whether we expect an intermediate or end segment.
+    let bytes_remaining = total_payload_size - stored_payload.remaining();
+    let segment_size = bytes_remaining.min(max_frame_size.without_header());
+
     let frame_end = segment_size + Header::SIZE;
 
     if incoming.remaining() < frame_end {
@@ -190,7 +193,7 @@ fn extract_segment(
     stored_payload.extend_from_slice(&incoming[0..segment_size]);
     incoming.advance(segment_size);
 
-    Outcome::Success(())
+    Outcome::Success(stored_payload.len() == total_payload_size)
 }
 
 /// Information about an initial frame in a given buffer.
