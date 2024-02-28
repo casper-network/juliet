@@ -14,7 +14,6 @@ use crate::{
         Outcome::{self, Success},
     },
     try_outcome,
-    util::Index,
     varint::decode_varint32,
 };
 
@@ -135,37 +134,12 @@ impl MultiframeReceiver {
                 let max_data_in_frame = max_frame_size.without_header();
 
                 if bytes_remaining > max_data_in_frame {
-                    // Intermediate segment.
-                    if buffer.remaining() < max_frame_size.get_usize() {
-                        return Outcome::incomplete(
-                            max_frame_size.get_usize() - buffer.remaining(),
-                        );
-                    }
-
-                    // Discard header.
-                    buffer.advance(Header::SIZE);
-
-                    // Copy data over to internal buffer.
-                    payload.extend_from_slice(&buffer[0..max_data_in_frame]);
-                    buffer.advance(max_data_in_frame);
+                    try_outcome!(extract_segment(buffer, payload, max_data_in_frame));
 
                     // We're done with this frame (but not the payload).
                     Success(None)
                 } else {
-                    // End segment
-                    let frame_end = Index::new(buffer, bytes_remaining + Header::SIZE);
-
-                    // If we don't have the entire frame read yet, return.
-                    if *frame_end > buffer.remaining() {
-                        return Outcome::incomplete(*frame_end - buffer.remaining());
-                    }
-
-                    // Discard header.
-                    buffer.advance(Header::SIZE);
-
-                    // Copy data over to internal buffer.
-                    payload.extend_from_slice(&buffer[0..bytes_remaining]);
-                    buffer.advance(bytes_remaining);
+                    try_outcome!(extract_segment(buffer, payload, bytes_remaining));
 
                     let finished_payload = mem::take(payload);
                     *self = MultiframeReceiver::Ready;
@@ -195,6 +169,28 @@ impl MultiframeReceiver {
             MultiframeReceiver::InProgress { header, .. } => Some(*header),
         }
     }
+}
+
+/// Given an incoming data buffer, transfers data from incoming to the payload if a complete
+/// intermediate or end frame is found.
+#[inline(always)]
+fn extract_segment(
+    incoming: &mut BytesMut,
+    stored_payload: &mut BytesMut,
+    segment_size: usize,
+) -> Outcome<(), OutgoingMessage> {
+    let frame_end = segment_size + Header::SIZE;
+
+    if incoming.remaining() < frame_end {
+        return Outcome::incomplete(frame_end - incoming.remaining());
+    }
+
+    // Discard header.
+    incoming.advance(Header::SIZE);
+    stored_payload.extend_from_slice(&incoming[0..segment_size]);
+    incoming.advance(segment_size);
+
+    Outcome::Success(())
 }
 
 /// Information about an initial frame in a given buffer.
