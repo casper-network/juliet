@@ -2,7 +2,7 @@
 
 #: Shorthand script to run test with logging setup correctly.
 
-RUST_LOG=${RUST_LOG:-juliet=trace}
+RUST_LOG=${RUST_LOG:-juliet=warn}
 export RUST_LOG
 
 # Run one thread at a time to not get interleaved output.
