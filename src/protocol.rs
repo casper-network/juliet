@@ -751,8 +751,8 @@ impl<const N: usize> JulietProtocol<N> {
     ) -> Outcome<CompletedRead, OutgoingMessage> {
         // First, attempt to complete a frame.
         loop {
-            // We do not have enough data to extract a header, indicate and return.
             if buffer.len() < Header::SIZE {
+                // We do not have enough data to extract a header, indicate and return.
                 return Outcome::incomplete(Header::SIZE - buffer.len());
             }
 

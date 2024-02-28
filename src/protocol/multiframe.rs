@@ -212,7 +212,9 @@ impl InitialFrameData {
     /// Returns whether or not the initial frame data describes a complete initial frame.
     #[inline(always)]
     fn is_complete(self) -> bool {
-        self.segment_len >= self.payload_size as usize
+        debug_assert!(self.segment_len <= self.payload_size as usize);
+
+        self.segment_len == self.payload_size as usize
     }
 }
 
