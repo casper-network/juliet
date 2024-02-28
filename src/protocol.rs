@@ -899,18 +899,17 @@ impl<const N: usize> JulietProtocol<N> {
                         return err_msg(header, ErrorKind::FictitiousRequest);
                     }
 
-                    let multiframe_outcome: Option<BytesMut> =
+                    let multiframe_outcome =
                         try_outcome!(channel.current_multiframe_receiver.accept(
                             header,
                             buffer,
                             self.max_frame_size,
                             channel.config.max_response_payload_size,
                             ErrorKind::ResponseTooLarge
-                        ))
-                        .into_completed_payload();
+                        ));
 
-                    if let Some(payload) = multiframe_outcome {
-                        // Message is complete. Remove it from the outgoing requests.
+                    // If the response is complete, process it.
+                    if let Some(payload) = multiframe_outcome.into_completed_payload() {
                         channel.outgoing_requests.remove(&header.id());
 
                         let payload = payload.freeze();
@@ -920,9 +919,6 @@ impl<const N: usize> JulietProtocol<N> {
                             id: header.id(),
                             payload: Some(payload),
                         });
-                    } else {
-                        // We need more frames to complete the payload. Do nothing and attempt
-                        // to read the next frame.
                     }
                 }
                 Kind::CancelReq => {
