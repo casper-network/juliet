@@ -499,7 +499,12 @@ pub enum LocalProtocolViolation {
     /// See [`ChannelConfiguration::with_max_request_payload_size()`] and
     /// [`ChannelConfiguration::with_max_response_payload_size()`] for details.
     #[error("payload exceeds configured limit")]
-    PayloadExceedsLimit,
+    PayloadExceedsLimit {
+        /// The payload length in bytes.
+        payload_length: usize,
+        /// The configured upper limit for payload length in bytes.
+        limit: usize,
+    },
     /// The given error payload exceeds a single frame.
     ///
     /// Error payloads may not span multiple frames, shorten the payload or increase frame size.
@@ -595,7 +600,10 @@ impl<const N: usize> JulietProtocol<N> {
 
         if let Some(ref payload) = payload {
             if payload.len() > chan.config.max_request_payload_size as usize {
-                return Err(LocalProtocolViolation::PayloadExceedsLimit);
+                return Err(LocalProtocolViolation::PayloadExceedsLimit {
+                    payload_length: payload.len(),
+                    limit: chan.config.max_request_payload_size as usize,
+                });
             }
         }
 
@@ -637,7 +645,10 @@ impl<const N: usize> JulietProtocol<N> {
 
         if let Some(ref payload) = payload {
             if payload.len() > chan.config.max_response_payload_size as usize {
-                return Err(LocalProtocolViolation::PayloadExceedsLimit);
+                return Err(LocalProtocolViolation::PayloadExceedsLimit {
+                    payload_length: payload.len(),
+                    limit: chan.config.max_request_payload_size as usize,
+                });
             }
         }
 
@@ -2202,7 +2213,10 @@ mod tests {
             .create_request(env.common_channel, payload.get())
             .expect_err("should not be able to create too large request");
 
-        assert_matches!(violation, LocalProtocolViolation::PayloadExceedsLimit);
+        assert_matches!(
+            violation,
+            LocalProtocolViolation::PayloadExceedsLimit { .. }
+        );
 
         // If we force the issue, Bob must refuse it instead.
         let bob_result = env.inject_and_send_request(Alice, payload.get());
@@ -2219,7 +2233,10 @@ mod tests {
             .bob
             .create_request(env.common_channel, payload.get())
             .expect_err("should not be able to create too large response");
-        assert_matches!(violation, LocalProtocolViolation::PayloadExceedsLimit);
+        assert_matches!(
+            violation,
+            LocalProtocolViolation::PayloadExceedsLimit { .. }
+        );
 
         // If we force the issue, Alice must refuse it.
         let alice_result = env.inject_and_send_response(Bob, id, payload.get());
