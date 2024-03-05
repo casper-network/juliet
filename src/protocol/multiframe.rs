@@ -44,6 +44,7 @@ pub(super) enum MultiframeReceiver {
 
 /// The outcome of a multiframe acceptance.
 #[derive(Debug)]
+#[allow(clippy::enum_variant_names)]
 pub(crate) enum CompletedFrame {
     /// A new multi-frame transfer was started.
     NewMultiFrame,
