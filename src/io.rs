@@ -559,27 +559,29 @@ where
                         let header_sent = frame_sent.header();
 
                         // If we finished the active multi frame send, clear it.
+                        let mut cleared_multi_frame = false;
                         if was_final {
                             let channel_idx = header_sent.channel().get() as usize;
                             if let Some(ref active_multi_frame) =
                                 self.active_multi_frame[channel_idx] {
                                 if header_sent == *active_multi_frame {
                                     self.active_multi_frame[channel_idx] = None;
+                                    cleared_multi_frame = true;
                                 }
                             }
-                        }
+                        };
 
                         if header_sent.is_error() {
                             // We finished sending an error frame, time to exit.
                             return Err(CoreError::RemoteProtocolViolation(header_sent));
                         }
 
-                        // TODO: We should restrict the dirty-queue processing here a little bit
-                        //       (only check when completing a multi-frame message).
                         // A message has completed sending, process the wait queue in case we have
                         // to start sending a multi-frame message like a response that was delayed
                         // only because of the one-multi-frame-per-channel restriction.
-                        self.process_wait_queue(header_sent.channel())?;
+                        if cleared_multi_frame {
+                            self.process_wait_queue(header_sent.channel())?;
+                        }
                     } else {
                         #[cfg(feature = "tracing")]
                         tracing::error!("current frame should not disappear");
@@ -745,6 +747,7 @@ where
                 let id = msg.header().id();
                 self.request_map.insert(io_id, (channel, id));
                 if msg.is_multi_frame(self.juliet.max_frame_size()) {
+                    debug_assert!(self.active_multi_frame[channel.get() as usize].is_none());
                     self.active_multi_frame[channel.get() as usize] = Some(msg.header());
                 }
                 self.ready_queue.push_back(msg.frames());
@@ -771,6 +774,7 @@ where
             } => {
                 if let Some(msg) = self.juliet.create_response(channel, id, payload)? {
                     if msg.is_multi_frame(self.juliet.max_frame_size()) {
+                        debug_assert!(self.active_multi_frame[channel.get() as usize].is_none());
                         self.active_multi_frame[channel.get() as usize] = Some(msg.header());
                     }
                     self.ready_queue.push_back(msg.frames())
@@ -867,6 +871,8 @@ fn item_should_wait<const N: usize>(
         } => {
             // Check if we cannot schedule due to the message exceeding the request limit.
             if !juliet.allowed_to_send_request(*channel)? {
+                #[cfg(feature = "tracing")]
+                tracing::trace!(%channel, %item, "item should wait: channel full");
                 return Ok(Some(*channel));
             }
 
@@ -889,6 +895,8 @@ fn item_should_wait<const N: usize>(
     if active_multi_frame.is_some() {
         if let Some(payload) = payload {
             if payload_is_multi_frame(juliet.max_frame_size(), payload.len()) {
+                #[cfg(feature = "tracing")]
+                tracing::trace!(%channel, %item, "item should wait: multiframe in progress");
                 return Ok(Some(*channel));
             }
         }
