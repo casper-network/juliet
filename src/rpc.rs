@@ -926,7 +926,7 @@ mod tests {
     async fn run_echo_client<const N: usize>(
         mut rpc_server: JulietRpcServer<N, ReadHalf<DuplexStream>, WriteHalf<DuplexStream>>,
     ) {
-        while let Some(inc) = rpc_server
+        if let Some(inc) = rpc_server
             .next_request()
             .await
             .expect("client rpc_server error")
@@ -1576,7 +1576,7 @@ mod tests {
         let mut bob = CompleteSetup::new(&rpc_builder, bob_stream);
 
         let alice_join_handle = tokio::spawn(async move {
-            while let Some(incoming_request) = alice
+            if let Some(incoming_request) = alice
                 .server
                 .next_request()
                 .await
