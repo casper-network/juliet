@@ -721,6 +721,16 @@ where
 
     /// Handles a new item to send out that arrived through the incoming channel.
     fn handle_incoming_item(&mut self, item: QueuedItem) -> Result<(), LocalProtocolViolation> {
+        // Process the wait queue to avoid this new item "jumping the queue".
+        match &item {
+            QueuedItem::Request { channel, .. } | QueuedItem::Response { channel, .. } => {
+                self.process_wait_queue(*channel)?
+            }
+            QueuedItem::RequestCancellation { .. }
+            | QueuedItem::ResponseCancellation { .. }
+            | QueuedItem::Error { .. } => {}
+        }
+
         // Check if the item is sendable immediately.
         if let Some(channel) = item_should_wait(&item, &self.juliet, &self.active_multi_frame)? {
             #[cfg(feature = "tracing")]
