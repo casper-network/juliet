@@ -1515,4 +1515,101 @@ mod tests {
 
         info!("all joined");
     }
+
+    #[tokio::test]
+    async fn send_two_large_requests() {
+        const NUM_REQUESTS: u16 = 20;
+        const PAYLOAD_SIZE: usize = 10_000;
+
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .try_init()
+            .ok();
+
+        info!("starting send-two-large test");
+
+        let channel_cfg = ChannelConfiguration::new()
+            .with_max_request_payload_size(PAYLOAD_SIZE as u32 * 2)
+            .with_max_response_payload_size(0)
+            .with_request_limit(NUM_REQUESTS / 2);
+
+        let protocol_builder =
+            ProtocolBuilder::with_default_channel_config(channel_cfg).max_frame_size(1024);
+
+        let rpc_builder: RpcBuilder<1> = RpcBuilder::new(IoCoreBuilder::with_default_buffer_size(
+            protocol_builder,
+            NUM_REQUESTS as usize * 2,
+        ))
+        .with_bubble_timeouts(true)
+        .with_default_timeout(Duration::from_secs(5));
+
+        let pipe_buffer = (PAYLOAD_SIZE + 16) * NUM_REQUESTS as usize + 1024;
+
+        let (alice_stream, bob_stream) = tokio::io::duplex(pipe_buffer);
+
+        let mut alice = CompleteSetup::new(&rpc_builder, alice_stream);
+        let mut bob = CompleteSetup::new(&rpc_builder, bob_stream);
+
+        let alice_join_handle = tokio::spawn(async move {
+            while let Some(incoming_request) = alice
+                .server
+                .next_request()
+                .await
+                .expect("alice should never error")
+            {
+                eprintln!("alice received: {}", incoming_request);
+                panic!("did not expect alice to receive anything");
+            }
+
+            eprintln!("alice quit quietly");
+        });
+
+        // Preload alice's queue with requests.
+        let mut payloads = vec![];
+
+        let mut guards = Vec::new();
+
+        for idx in 0..NUM_REQUESTS as usize {
+            let payload = Bytes::from_iter((idx..PAYLOAD_SIZE + (idx * 2)).map(|val| val as u8));
+            payloads.push(payload.clone());
+            let guard = alice
+                .client
+                .create_request(ChannelId::new(0))
+                .with_payload(payload.clone())
+                .try_queue_for_sending()
+                .expect("should never fail to queue, did you make the memory buffer too small?");
+            guards.push(guard);
+            eprintln!("pushed {}", idx);
+        }
+
+        let bob_join_handle = tokio::spawn(async move {
+            for expected_payload in payloads {
+                let incoming_request = bob
+                    .server
+                    .next_request()
+                    .await
+                    .expect("bob should never error")
+                    .expect("bob should never get None");
+                eprintln!("bob received: {}", incoming_request);
+                assert_eq!(incoming_request.payload, Some(expected_payload));
+                incoming_request.respond(None);
+            }
+            eprintln!("bob quit quietly");
+        });
+
+        // Both background tasks are running, wait for requests to finish.
+        for (idx, guard) in guards.into_iter().enumerate() {
+            let resp = guard.wait_for_response().await;
+            eprintln!("guard {idx}: {resp:?}");
+        }
+
+        // Join both server tasks to ensure there were no panics.
+        alice_join_handle.await.expect("alice server panicked");
+        bob_join_handle.await.expect("bob server panicked");
+
+        // Drop both clients, resulting in a server shutdown.
+        eprintln!("dropping clients");
+        drop(alice.client);
+        drop(bob.client);
+    }
 }

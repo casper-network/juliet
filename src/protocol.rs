@@ -27,7 +27,7 @@ use std::{collections::HashSet, fmt::Display};
 use bytes::{Buf, Bytes, BytesMut};
 use thiserror::Error;
 
-use self::multiframe::MultiframeReceiver;
+use self::multiframe::{CompletedFrame, MultiframeReceiver};
 pub use self::outgoing_message::{FrameIter, OutgoingFrame, OutgoingMessage};
 use crate::{
     header::{self, ErrorKind, Header, Kind},
@@ -751,8 +751,8 @@ impl<const N: usize> JulietProtocol<N> {
     ) -> Outcome<CompletedRead, OutgoingMessage> {
         // First, attempt to complete a frame.
         loop {
-            // We do not have enough data to extract a header, indicate and return.
             if buffer.len() < Header::SIZE {
+                // We do not have enough data to extract a header, indicate and return.
                 return Outcome::incomplete(Header::SIZE - buffer.len());
             }
 
@@ -859,11 +859,7 @@ impl<const N: usize> JulietProtocol<N> {
                     }
                 }
                 Kind::RequestPl => {
-                    // Make a note whether or not we are continuing an existing request.
-                    let is_new_request =
-                        channel.current_multiframe_receiver.is_new_transfer(header);
-
-                    let multiframe_outcome: Option<BytesMut> =
+                    let completed_frame: CompletedFrame =
                         try_outcome!(channel.current_multiframe_receiver.accept(
                             header,
                             buffer,
@@ -873,8 +869,7 @@ impl<const N: usize> JulietProtocol<N> {
                         ));
 
                     // If we made it to this point, we have consumed the frame. Record it.
-
-                    if is_new_request {
+                    if completed_frame.was_new() {
                         // Requests must be eagerly (first frame) rejected if exceeding the limit.
                         if channel.is_at_max_incoming_requests() {
                             return err_msg(header, ErrorKind::RequestLimitExceeded);
@@ -887,8 +882,8 @@ impl<const N: usize> JulietProtocol<N> {
                         channel.increment_cancellation_allowance();
                     }
 
-                    if let Some(payload) = multiframe_outcome {
-                        // Message is complete.
+                    // If we completed the message, return it.
+                    if let Some(payload) = completed_frame.into_completed_payload() {
                         let payload = payload.freeze();
 
                         return Success(CompletedRead::NewRequest {
@@ -896,9 +891,6 @@ impl<const N: usize> JulietProtocol<N> {
                             id: header.id(),
                             payload: Some(payload),
                         });
-                    } else {
-                        // We need more frames to complete the payload. Do nothing and attempt
-                        // to read the next frame.
                     }
                 }
                 Kind::ResponsePl => {
@@ -907,7 +899,7 @@ impl<const N: usize> JulietProtocol<N> {
                         return err_msg(header, ErrorKind::FictitiousRequest);
                     }
 
-                    let multiframe_outcome: Option<BytesMut> =
+                    let multiframe_outcome =
                         try_outcome!(channel.current_multiframe_receiver.accept(
                             header,
                             buffer,
@@ -916,8 +908,8 @@ impl<const N: usize> JulietProtocol<N> {
                             ErrorKind::ResponseTooLarge
                         ));
 
-                    if let Some(payload) = multiframe_outcome {
-                        // Message is complete. Remove it from the outgoing requests.
+                    // If the response is complete, process it.
+                    if let Some(payload) = multiframe_outcome.into_completed_payload() {
                         channel.outgoing_requests.remove(&header.id());
 
                         let payload = payload.freeze();
@@ -927,9 +919,6 @@ impl<const N: usize> JulietProtocol<N> {
                             id: header.id(),
                             payload: Some(payload),
                         });
-                    } else {
-                        // We need more frames to complete the payload. Do nothing and attempt
-                        // to read the next frame.
                     }
                 }
                 Kind::CancelReq => {
@@ -2395,9 +2384,9 @@ mod tests {
             outcome,
             CompletedRead::ReceivedResponse {
                 channel,
-                /// The ID of the request received.
+                // The ID of the request received.
                 id,
-                /// The response payload.
+                // The response payload.
                 payload: None,
             }
         );

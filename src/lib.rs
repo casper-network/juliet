@@ -138,6 +138,19 @@ impl<T, E> Outcome<T, E> {
         }
     }
 
+    /// Maps the value of an [`Outcome`].
+    #[inline]
+    pub fn map<T2, F>(self, f: F) -> Outcome<T2, E>
+    where
+        F: FnOnce(T) -> T2,
+    {
+        match self {
+            Outcome::Incomplete(n) => Outcome::Incomplete(n),
+            Outcome::Fatal(err) => Outcome::Fatal(err),
+            Outcome::Success(value) => Outcome::Success(f(value)),
+        }
+    }
+
     /// Maps the error of an [`Outcome`].
     #[inline]
     pub fn map_err<E2, F>(self, f: F) -> Outcome<T, E2>
