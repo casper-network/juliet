@@ -849,11 +849,6 @@ where
                 self.wait_queue[channel.get() as usize].push_back(item);
             } else {
                 self.send_to_ready_queue(item)?;
-
-                // No need to look further if we have saturated the channel.
-                if !self.juliet.allowed_to_send_request(channel)? {
-                    break;
-                }
             }
 
             // Ensure we do not loop endlessly if we cannot find anything.
