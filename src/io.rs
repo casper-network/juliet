@@ -508,7 +508,7 @@ where
                     Outcome::Fatal(err_msg) => {
                         // The remote messed up, begin shutting down due to an error.
                         #[cfg(feature = "tracing")]
-                        tracing::warn!(err_msg_header=%err_msg.header(), "injecting error due to fatal outcome");
+                        tracing::debug!(err_msg_header=%err_msg.header(), "injecting error due to fatal outcome");
                         self.inject_error(err_msg);
                     }
                     Outcome::Success(successful_read) => {
