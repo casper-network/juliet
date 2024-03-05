@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+* The RPC interface now offers a facility for sending custom user errors through `send_custom_error`.
+
 ### Fixed
 
 * A bug that caused connections seeing a high incidence of multi-frame sends to collapse due to a protocol violation by the sender has been fixed.

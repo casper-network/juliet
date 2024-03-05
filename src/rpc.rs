@@ -239,6 +239,30 @@ impl<const N: usize> JulietRpcClient<N> {
             timeout: self.default_timeout,
         }
     }
+
+    /// Injects a custom error.
+    ///
+    /// Sends an error of type `OTHER` (see RFC). As a result, the local server will refuse to
+    /// accept any more requests and shut down entirely after the error has been sent.
+    ///
+    /// The error payload is entirely application defined, but will be **truncated** to the maximum
+    /// length that can fit into a single frame.
+    ///
+    /// The error will be sent on the corresponding `channel`, but bypass all other frames currently
+    /// scheduled, including those on other channels. `id` can be freely chosen. Both sender and
+    /// receiver will attempt to shut down the connection directly afterwards.
+    ///
+    /// Returns whether or not the error has been queued successfully. The only thing stopping an
+    /// error from being enqueued for sending is the connection already shut down or in the process
+    /// of shutting down, as can be the case when sending two errors in succession.
+    #[inline]
+    pub fn send_custom_error(&self, channel: ChannelId, id: Id, error: Bytes) -> bool {
+        self.request_handle
+            .clone()
+            .downgrade()
+            .enqueue_error(channel, id, error)
+            .is_ok()
+    }
 }
 
 /// An error produced by the RPC error.
