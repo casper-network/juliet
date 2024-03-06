@@ -24,6 +24,8 @@
 //! It should also be kept around even if no requests are sent, as dropping it is used to signal the
 //! [`IoCore`] to close the connection.
 
+mod wait_queue;
+
 use std::{
     collections::VecDeque,
     fmt::{self, Display, Formatter},
@@ -49,12 +51,13 @@ use tokio::{
 use crate::{
     header::Header,
     protocol::{
-        payload_is_multi_frame, CompletedRead, FrameIter, JulietProtocol, LocalProtocolViolation,
-        OutgoingFrame, OutgoingMessage, ProtocolBuilder,
+        CompletedRead, FrameIter, JulietProtocol, LocalProtocolViolation, OutgoingFrame,
+        OutgoingMessage, ProtocolBuilder,
     },
     util::PayloadFormat,
     ChannelId, Id, Outcome,
 };
+use wait_queue::{PushOutcome, WaitQueue};
 
 /// Maximum number of bytes to pre-allocate in buffers.
 const MAX_ALLOC: usize = 32 * 1024; // 32 KiB
@@ -269,7 +272,7 @@ pub struct IoCore<const N: usize, R, W> {
     /// Frames waiting to be sent.
     ready_queue: VecDeque<FrameIter>,
     /// Messages that are not yet ready to be sent.
-    wait_queue: [VecDeque<QueuedItem>; N],
+    wait_queue: [WaitQueue; N],
     /// Receiver for new messages to be queued.
     receiver: UnboundedReceiver<QueuedItem>,
     /// Mapping for outgoing requests, mapping internal IDs to public ones.
@@ -721,27 +724,34 @@ where
 
     /// Handles a new item to send out that arrived through the incoming channel.
     fn handle_incoming_item(&mut self, item: QueuedItem) -> Result<(), LocalProtocolViolation> {
-        // Process the wait queue to avoid this new item "jumping the queue".
-        match &item {
-            QueuedItem::Request { channel, .. } | QueuedItem::Response { channel, .. } => {
-                self.process_wait_queue(*channel)?
-            }
+        let channel = match &item {
+            QueuedItem::Request { channel, .. } | QueuedItem::Response { channel, .. } => *channel,
             QueuedItem::RequestCancellation { .. }
             | QueuedItem::ResponseCancellation { .. }
-            | QueuedItem::Error { .. } => {}
-        }
+            | QueuedItem::Error { .. } => {
+                // These variants always get send immediately.
+                #[cfg(feature = "tracing")]
+                tracing::debug!(%item, "ready to send");
+                return self.send_to_ready_queue(item);
+            }
+        };
 
-        // Check if the item is sendable immediately.
-        if let Some(channel) = item_should_wait(&item, &self.juliet, &self.active_multi_frame)? {
-            #[cfg(feature = "tracing")]
-            tracing::debug!(%item, "postponing send");
-            self.wait_queue[channel.get() as usize].push_back(item);
-            return Ok(());
-        }
+        // Process the wait queue to avoid this new item "jumping the queue".
+        self.process_wait_queue(channel)?;
 
-        #[cfg(feature = "tracing")]
-        tracing::debug!(%item, "ready to send");
-        self.send_to_ready_queue(item)
+        // Add the item to the wait queue, or send if the wait queue returns the item.
+        match self.wait_queue[channel.get() as usize].try_push_back(
+            item,
+            &self.juliet,
+            &self.active_multi_frame,
+        )? {
+            PushOutcome::Pushed => Ok(()),
+            PushOutcome::NotPushed(ready_item) => {
+                #[cfg(feature = "tracing")]
+                tracing::debug!(item = %ready_item, "ready to send");
+                self.send_to_ready_queue(ready_item)
+            }
+        }
     }
 
     /// Sends an item directly to the ready queue, causing it to be sent out eventually.
@@ -841,74 +851,15 @@ where
 
     /// Process the wait queue of a given channel, promoting messages that are ready to be sent.
     fn process_wait_queue(&mut self, channel: ChannelId) -> Result<(), LocalProtocolViolation> {
-        let mut remaining = self.wait_queue[channel.get() as usize].len();
-
-        while let Some(item) = self.wait_queue[channel.get() as usize].pop_front() {
-            if item_should_wait(&item, &self.juliet, &self.active_multi_frame)?.is_some() {
-                // Put it right back into the queue.
-                self.wait_queue[channel.get() as usize].push_back(item);
-            } else {
-                self.send_to_ready_queue(item)?;
-            }
-
-            // Ensure we do not loop endlessly if we cannot find anything.
-            remaining -= 1;
-            if remaining == 0 {
-                break;
-            }
+        while let Some(item) = self.wait_queue[channel.get() as usize].next_item(
+            channel,
+            &self.juliet,
+            &self.active_multi_frame,
+        )? {
+            self.send_to_ready_queue(item)?;
         }
-
         Ok(())
     }
-}
-
-/// Determines whether an item is ready to be moved from the wait queue to the ready queue.
-///
-/// Returns `None` if the item does not need to wait. Otherwise, the item's channel ID is returned.
-fn item_should_wait<const N: usize>(
-    item: &QueuedItem,
-    juliet: &JulietProtocol<N>,
-    active_multi_frame: &[Option<Header>; N],
-) -> Result<Option<ChannelId>, LocalProtocolViolation> {
-    let (payload, channel) = match item {
-        QueuedItem::Request {
-            channel, payload, ..
-        } => {
-            // Check if we cannot schedule due to the message exceeding the request limit.
-            if !juliet.allowed_to_send_request(*channel)? {
-                #[cfg(feature = "tracing")]
-                tracing::trace!(%channel, %item, "item should wait: channel full");
-                return Ok(Some(*channel));
-            }
-
-            (payload, channel)
-        }
-        QueuedItem::Response {
-            channel, payload, ..
-        } => (payload, channel),
-
-        // Other messages are always ready.
-        QueuedItem::RequestCancellation { .. }
-        | QueuedItem::ResponseCancellation { .. }
-        | QueuedItem::Error { .. } => return Ok(None),
-    };
-
-    let active_multi_frame = active_multi_frame[channel.get() as usize];
-
-    // Check if we cannot schedule due to the message being multi-frame and there being a
-    // multi-frame send in progress:
-    if active_multi_frame.is_some() {
-        if let Some(payload) = payload {
-            if payload_is_multi_frame(juliet.max_frame_size(), payload.len()) {
-                #[cfg(feature = "tracing")]
-                tracing::trace!(%channel, %item, "item should wait: multiframe in progress");
-                return Ok(Some(*channel));
-            }
-        }
-    }
-
-    // Otherwise, this should be a legitimate add to the run queue.
-    Ok(None)
 }
 
 /// A handle to the input queue to the [`IoCore`] that allows sending requests and responses.
