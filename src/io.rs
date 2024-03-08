@@ -47,7 +47,7 @@ use tokio::{
 };
 
 use crate::{
-    header::Header,
+    header::{ErrorKind, Header},
     protocol::{
         payload_is_multi_frame, CompletedRead, FrameIter, JulietProtocol, LocalProtocolViolation,
         OutgoingFrame, OutgoingMessage, ProtocolBuilder,
@@ -850,6 +850,22 @@ where
         }
 
         Ok(())
+    }
+}
+
+impl CoreError {
+    /// If the error stems from a peer sending us a custom error, return its header and payload.
+    #[inline(always)]
+    pub fn as_other_error(&self) -> Option<(Header, &Bytes)> {
+        match self {
+            CoreError::RemoteReportedError { header, data }
+                if header.is_error() && header.error_kind() == ErrorKind::Other =>
+            {
+                debug_assert!(data.is_some(), "`CoreError::RemoteReportedError` should never have no `data` for `OTHER` kind of error");
+                Some((*header, data.as_ref()?))
+            }
+            _ => None,
+        }
     }
 }
 

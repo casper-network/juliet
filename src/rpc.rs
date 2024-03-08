@@ -41,6 +41,7 @@ use tokio::{
 };
 
 use crate::{
+    header::Header,
     io::{
         CoreError, EnqueueError, Handle, IoCore, IoCoreBuilder, IoEvent, IoId, RequestHandle,
         RequestTicket, ReservationError,
@@ -277,6 +278,17 @@ pub enum RpcServerError {
         /// Number of requests that timed out at once.
         count: usize,
     },
+}
+
+impl RpcServerError {
+    /// If the error stems from a peer sending us a custom error, return its header and payload.
+    #[inline(always)]
+    pub fn as_other_error(&self) -> Option<(Header, &Bytes)> {
+        match self {
+            RpcServerError::CoreError(err) => err.as_other_error(),
+            _ => None,
+        }
+    }
 }
 
 impl<const N: usize, R, W> JulietRpcServer<N, R, W>
@@ -882,7 +894,7 @@ mod tests {
         io::{CoreError, IoCoreBuilder},
         protocol::ProtocolBuilder,
         rpc::{RequestError, RpcBuilder, RpcServerError},
-        ChannelConfiguration, ChannelId,
+        ChannelConfiguration, ChannelId, Id,
     };
 
     use super::{
@@ -1632,7 +1644,114 @@ mod tests {
         bob_join_handle.await.expect("bob server panicked");
 
         // Drop both clients, resulting in a server shutdown.
-        eprintln!("dropping clients");
+        info!("dropping clients");
+        drop(alice.client);
+        drop(bob.client);
+    }
+
+    #[tokio::test]
+    async fn send_custom_error() {
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .try_init()
+            .ok();
+
+        info!("starting send custom error test");
+
+        let channel_cfg = ChannelConfiguration::new()
+            .with_max_request_payload_size(1024)
+            .with_max_response_payload_size(1024)
+            .with_request_limit(5);
+
+        let protocol_builder =
+            ProtocolBuilder::with_default_channel_config(channel_cfg).max_frame_size(256);
+
+        let rpc_builder: RpcBuilder<1> = RpcBuilder::new(IoCoreBuilder::with_default_buffer_size(
+            protocol_builder,
+            10,
+        ))
+        .with_bubble_timeouts(true)
+        .with_default_timeout(Duration::from_secs(5));
+
+        let pipe_buffer = 64;
+        let channel = ChannelId::new(0);
+
+        let (alice_stream, bob_stream) = tokio::io::duplex(pipe_buffer);
+
+        let mut alice = CompleteSetup::new(&rpc_builder, alice_stream);
+        let mut bob = CompleteSetup::new(&rpc_builder, bob_stream);
+
+        let alice_join_handle = tokio::spawn(async move {
+            while let Some(incoming_request) = alice
+                .server
+                .next_request()
+                .await
+                .expect("TODO: we expect alice to error here, all good")
+            {
+                eprintln!("alice received: {}", incoming_request);
+                panic!("did not expect alice to receive anything");
+            }
+
+            panic!("alice quit quietly, this should not happen");
+        });
+
+        let bob_join_handle = tokio::spawn(async move {
+            loop {
+                match bob.server.next_request().await {
+                    Err(err) => {
+                        info!(%err, "bob received an error");
+                        let (header, payload) =
+                            err.as_other_error().expect("should be OTHER error");
+                        assert_eq!(payload.as_ref(), b"shame on you");
+                        assert_eq!(header.id(), Id::new(1234));
+                        assert_eq!(header.channel(), channel);
+
+                        info!("all good, shutting down bob");
+                        break;
+                    }
+                    Ok(Some(incoming_request)) => {
+                        info!("bob received: {}", incoming_request);
+                        // Spawn an echo-response.
+                        let echo = incoming_request.payload().clone();
+                        incoming_request.respond(echo);
+                    }
+                    Ok(None) => {
+                        panic!("bob quit quietly, this should not happen");
+                    }
+                }
+            }
+        });
+
+        info!("sending single request");
+        let payload = Bytes::from(&b"hello"[..]);
+        let response = alice
+            .client
+            .create_request(channel)
+            .with_payload(payload.clone())
+            .queue_for_sending()
+            .await
+            .wait_for_response()
+            .await
+            .expect("should not fail to send request");
+        assert_eq!(response, Some(payload.clone()));
+
+        info!("sent a single request successfully");
+
+        // Now send the error.
+        info!("queuing error");
+        let error_queued = alice.client.send_custom_error(
+            channel,
+            Id::new(1234),
+            Bytes::from(&b"shame on you"[..]),
+        );
+        info!("error queued");
+
+        assert!(error_queued);
+
+        alice_join_handle.await.expect("alice server panicked");
+        bob_join_handle.await.expect("bob server panicked");
+
+        // Drop both clients, resulting in a server shutdown.
         drop(alice.client);
         drop(bob.client);
     }
