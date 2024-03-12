@@ -475,6 +475,16 @@ where
 
         (deadline, timed_out)
     }
+
+    /// Injects a custom error.
+    ///
+    /// Similar to [`JulietRpcClient::send_custom_error`]. This function is available for
+    /// convenience to allow the server to terminate the connection with an error without having
+    /// keep a client around.
+    #[inline]
+    pub fn send_custom_error(&self, channel: ChannelId, id: Id, error: Bytes) -> bool {
+        self.handle.enqueue_error(channel, id, error).is_ok()
+    }
 }
 
 impl<const N: usize, R, W> Drop for JulietRpcServer<N, R, W> {
