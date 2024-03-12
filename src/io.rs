@@ -270,7 +270,7 @@ pub struct IoCore<const N: usize, R, W> {
     /// The error queued to be sent before shutting down.
     pending_error: Option<OutgoingFrame>,
     /// The maximum time allowed for a peer to receive an error.
-    error_timeout: Duration,
+    pub(super) error_timeout: Duration,
 
     /// The frame in the process of being sent, which may be partially transferred already. Also
     /// indicates if the current frame is the final frame of a message.

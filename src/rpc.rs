@@ -485,6 +485,32 @@ where
     pub fn send_custom_error(&self, channel: ChannelId, id: Id, error: Bytes) -> bool {
         self.handle.enqueue_error(channel, id, error).is_ok()
     }
+
+    /// Inject a custom error, then run the server just long enough to send it.
+    ///
+    /// Calls [`JulietRpcServer::send_custom_error`], then runs [`JulietRpcServer::next_request`] in
+    /// a loop, cancelling all requests.
+    ///
+    /// This is a best effort function, any connection closure, error or timeout is not reported. It
+    /// will take no longer than the configured error timeout.
+    pub async fn send_custom_error_and_shutdown(
+        mut self,
+        channel: ChannelId,
+        id: Id,
+        error: Bytes,
+    ) {
+        if self.send_custom_error(channel, id, error) {
+            // This timeout is not necessary, but a safeguard against bugs in the central loop.
+            tokio::time::timeout(self.core.error_timeout, async move {
+                while let Ok(Some(_incoming_request)) = self.next_request().await {
+                    // Simply discard requests.
+                }
+            })
+            .await
+            // Discard the timeout, if any.
+            .ok();
+        }
+    }
 }
 
 impl<const N: usize, R, W> Drop for JulietRpcServer<N, R, W> {

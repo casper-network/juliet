@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-* The RPC interface now offers a facility for sending custom user errors through `send_custom_error`.
+* The RPC interface now offers a facility for sending custom user errors through `send_custom_error` and `send_custom_error_and_shutdown`.
 
 ### Fixed
 
