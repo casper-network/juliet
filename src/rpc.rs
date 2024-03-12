@@ -1706,7 +1706,7 @@ mod tests {
                         .as_local_other_err()
                         .expect("should have received `OTHER` error");
 
-                    assert_eq!(&payload[..], b"ASDAS");
+                    assert_eq!(&payload[..], b"shame on you");
                 }
             }
         });

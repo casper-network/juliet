@@ -493,6 +493,17 @@ where
     pub async fn next_event(&mut self) -> Result<Option<IoEvent>, CoreError> {
         loop {
             if let Some(ref mut pending_error) = self.pending_error {
+                // We have to invert the process of turning an `Option<Bytes>` into a `Bytes` here,
+                // since sending it will consume the bytes in the buffer. Rely on the fact that
+                // there is a payload if and only if the error kind is OTHER.
+                let data = if pending_error.header().is_error()
+                    && pending_error.header().error_kind() == ErrorKind::Other
+                {
+                    Some(pending_error.segment().clone())
+                } else {
+                    None
+                };
+
                 tokio::time::timeout(self.error_timeout, self.writer.write_all_buf(pending_error))
                     .await
                     .map_err(|_elapsed| CoreError::ErrorWriteTimeout)?
@@ -503,16 +514,6 @@ where
                     .pending_error
                     .take()
                     .expect("pending_error should not have disappeared");
-
-                // We have to invert the process of turning an `Option<Bytes>` into a `Bytes` here.
-                // Rely on the fact that there is a payload if and only if the error kind is OTHER.
-                let data = if peers_crime.header().is_error()
-                    && peers_crime.header().error_kind() == ErrorKind::Other
-                {
-                    Some(peers_crime.segment().clone())
-                } else {
-                    None
-                };
 
                 return Err(CoreError::RemoteProtocolViolation {
                     header: peers_crime.header(),
