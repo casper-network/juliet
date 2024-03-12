@@ -427,6 +427,14 @@ impl OutgoingFrame {
         self.0.first_ref().get_ref().header()
     }
 
+    /// Returns the outgoing frame's segment.
+    ///
+    /// Note that this is NOT the entire message, just the portion that fits into a single frame.
+    #[inline]
+    pub fn segment(&self) -> &Bytes {
+        self.0.last_ref()
+    }
+
     /// Writes out the frame.
     ///
     /// Equivalent to `self.copy_to_bytes(self.remaining)`.

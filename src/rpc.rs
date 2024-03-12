@@ -283,9 +283,18 @@ pub enum RpcServerError {
 impl RpcServerError {
     /// If the error stems from a peer sending us a custom error, return its header and payload.
     #[inline(always)]
-    pub fn as_other_error(&self) -> Option<(Header, &Bytes)> {
+    pub fn as_remote_other_err(&self) -> Option<(Header, &Bytes)> {
         match self {
-            RpcServerError::CoreError(err) => err.as_other_error(),
+            RpcServerError::CoreError(err) => err.as_remote_other_err(),
+            _ => None,
+        }
+    }
+
+    /// If the error was a locally created custom error, return its header and payload.
+    #[inline(always)]
+    pub fn as_local_other_err(&self) -> Option<(Header, &Bytes)> {
+        match self {
+            RpcServerError::CoreError(err) => err.as_local_other_err(),
             _ => None,
         }
     }
@@ -1682,17 +1691,24 @@ mod tests {
         let mut bob = CompleteSetup::new(&rpc_builder, bob_stream);
 
         let alice_join_handle = tokio::spawn(async move {
-            while let Some(incoming_request) = alice
-                .server
-                .next_request()
-                .await
-                .expect("TODO: we expect alice to error here, all good")
-            {
-                eprintln!("alice received: {}", incoming_request);
-                panic!("did not expect alice to receive anything");
-            }
+            match alice.server.next_request().await {
+                Ok(None) => {
+                    panic!("alice quit quietly, this should not happen");
+                }
+                Ok(val) => {
+                    panic!(
+                        "did not expect alice to receive anything, but received: {:?}",
+                        val
+                    );
+                }
+                Err(err) => {
+                    let (_header, payload) = err
+                        .as_local_other_err()
+                        .expect("should have received `OTHER` error");
 
-            panic!("alice quit quietly, this should not happen");
+                    assert_eq!(&payload[..], b"ASDAS");
+                }
+            }
         });
 
         let bob_join_handle = tokio::spawn(async move {
@@ -1701,7 +1717,7 @@ mod tests {
                     Err(err) => {
                         info!(%err, "bob received an error");
                         let (header, payload) =
-                            err.as_other_error().expect("should be OTHER error");
+                            err.as_remote_other_err().expect("should be OTHER error");
                         assert_eq!(payload.as_ref(), b"shame on you");
                         assert_eq!(header.id(), Id::new(1234));
                         assert_eq!(header.channel(), channel);

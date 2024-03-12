@@ -200,15 +200,26 @@ pub enum CoreError {
         data.as_ref().map(|b| b.len()).unwrap_or(0))
     ]
     RemoteReportedError {
-        /// Header of the reported error.
+        /// Header of the received error.
         header: Header,
         /// The error payload, if the error kind was
         /// [`ErrorKind::Other`](crate::header::ErrorKind::Other).
         data: Option<Bytes>,
     },
     /// The remote peer violated the protocol and has been sent an error.
-    #[error("error sent to peer: {0}")]
-    RemoteProtocolViolation(Header),
+    #[error("error sent to peer [channel {}/id {}]: {} (payload: {} bytes)",
+        header.channel(),
+        header.id(),
+        header.error_kind(),
+        data.as_ref().map(|b| b.len()).unwrap_or(0))
+    ]
+    RemoteProtocolViolation {
+        /// Header of the locally created error.
+        header: Header,
+        /// The error payload, if the error kind was
+        /// [`ErrorKind::Other`](crate::header::ErrorKind::Other).
+        data: Option<Bytes>,
+    },
     #[error("local protocol violation")]
     /// Local protocol violation - caller violated the crate's API.
     LocalProtocolViolation(#[from] LocalProtocolViolation),
@@ -491,9 +502,22 @@ where
                 let peers_crime = self
                     .pending_error
                     .take()
-                    .expect("pending_error should not have disappeared")
-                    .header();
-                return Err(CoreError::RemoteProtocolViolation(peers_crime));
+                    .expect("pending_error should not have disappeared");
+
+                // We have to invert the process of turning an `Option<Bytes>` into a `Bytes` here.
+                // Rely on the fact that there is a payload if and only if the error kind is OTHER.
+                let data = if peers_crime.header().is_error()
+                    && peers_crime.header().error_kind() == ErrorKind::Other
+                {
+                    Some(peers_crime.segment().clone())
+                } else {
+                    None
+                };
+
+                return Err(CoreError::RemoteProtocolViolation {
+                    header: peers_crime.header(),
+                    data,
+                });
             }
 
             if self.next_parse_at <= self.buffer.remaining() {
@@ -571,7 +595,10 @@ where
 
                         if header_sent.is_error() {
                             // We finished sending an error frame, time to exit.
-                            return Err(CoreError::RemoteProtocolViolation(header_sent));
+                            return Err(CoreError::RemoteProtocolViolation{
+                                header: header_sent,
+                                data: None
+                            });
                         }
 
                         // TODO: We should restrict the dirty-queue processing here a little bit
@@ -854,11 +881,25 @@ where
 }
 
 impl CoreError {
-    /// If the error stems from a peer sending us a custom error, return its header and payload.
+    /// If the error stems from a peer *sending* us a custom error, return its header and payload.
     #[inline(always)]
-    pub fn as_other_error(&self) -> Option<(Header, &Bytes)> {
+    pub fn as_remote_other_err(&self) -> Option<(Header, &Bytes)> {
         match self {
             CoreError::RemoteReportedError { header, data }
+                if header.is_error() && header.error_kind() == ErrorKind::Other =>
+            {
+                debug_assert!(data.is_some(), "`CoreError::RemoteReportedError` should never have no `data` for `OTHER` kind of error");
+                Some((*header, data.as_ref()?))
+            }
+            _ => None,
+        }
+    }
+
+    /// If the error was a locally created custom error, return its header and payload.
+    #[inline(always)]
+    pub fn as_local_other_err(&self) -> Option<(Header, &Bytes)> {
+        match self {
+            CoreError::RemoteProtocolViolation { header, data }
                 if header.is_error() && header.error_kind() == ErrorKind::Other =>
             {
                 debug_assert!(data.is_some(), "`CoreError::RemoteReportedError` should never have no `data` for `OTHER` kind of error");
