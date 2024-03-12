@@ -480,22 +480,22 @@ where
     /// Polling of this function must continue only until `Err(_)` or `Ok(None)` is returned,
     /// indicating that the connection should be closed or has been closed.
     pub async fn next_event(&mut self) -> Result<Option<IoEvent>, CoreError> {
-        if let Some(ref mut pending_error) = self.pending_error {
-            tokio::time::timeout(self.error_timeout, self.writer.write_all_buf(pending_error))
-                .await
-                .map_err(|_elapsed| CoreError::ErrorWriteTimeout)?
-                .map_err(CoreError::WriteFailed)?;
-
-            // We succeeded writing, clear the error.
-            let peers_crime = self
-                .pending_error
-                .take()
-                .expect("pending_error should not have disappeared")
-                .header();
-            return Err(CoreError::RemoteProtocolViolation(peers_crime));
-        }
-
         loop {
+            if let Some(ref mut pending_error) = self.pending_error {
+                tokio::time::timeout(self.error_timeout, self.writer.write_all_buf(pending_error))
+                    .await
+                    .map_err(|_elapsed| CoreError::ErrorWriteTimeout)?
+                    .map_err(CoreError::WriteFailed)?;
+
+                // We succeeded writing, clear the error.
+                let peers_crime = self
+                    .pending_error
+                    .take()
+                    .expect("pending_error should not have disappeared")
+                    .header();
+                return Err(CoreError::RemoteProtocolViolation(peers_crime));
+            }
+
             if self.next_parse_at <= self.buffer.remaining() {
                 // Simplify reasoning about this code.
                 self.next_parse_at = 0;
